@@ -1,0 +1,138 @@
+# ===============================================
+# [cdc-oracle — CDC 소스 (LogMiner)]
+#   → Deployment 가 아닌 이유: RWO 볼륨을 두 파드가 동시에 잡으면 안 되는데, STS 는 항상
+#     '종료 후 생성'이라 그 창이 없다(prometheus 와 같은 근거).
+#   → command/args 를 주지 않는다 — 이미지 entrypoint(container-entrypoint.sh)가
+#     DB 생성·ARCHIVELOG 전환·초기화 훅 실행을 순서대로 수행하는 구조라 끼어들 자리가 없다.
+# ===============================================
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: cdc-oracle
+  namespace: ${namespace}
+  labels:
+    app: cdc-oracle
+    app.kubernetes.io/name: cdc-oracle
+    app.kubernetes.io/component: test-rdb
+    app.kubernetes.io/part-of: data-layer
+spec:
+  serviceName: cdc-oracle
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cdc-oracle
+  template:
+    metadata:
+      labels:
+        app: cdc-oracle
+        app.kubernetes.io/name: cdc-oracle
+        app.kubernetes.io/component: test-rdb
+        app.kubernetes.io/part-of: data-layer
+    spec:
+      # Service env 자동 주입 차단 — 근거는 CLAUDE.md '쿠버네티스 규약'
+      enableServiceLinks: false
+      securityContext:
+        # 이미지는 oracle(54321)로 돈다. local-path 볼륨은 0777 이라 없어도 뜨지만,
+        # storage_class 를 longhorn 으로 바꾸면 새 볼륨이 root:root 0755 로 와서 첫 기동에 죽는다.
+        fsGroup: 54321
+        # ⚠ Always 로 두면 kubelet 이 매 기동마다 6GB 데이터파일 트리를 통째로 chown 한다
+        #   (느린 랩에서 기동이 수 분 늘어난다). 루트 소유자가 어긋날 때만 고친다.
+        fsGroupChangePolicy: OnRootMismatch
+      containers:
+        - name: oracle
+          image: ${image}
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: oracle
+              containerPort: ${port}
+          # 공용 ConfigMap/Secret 을 envFrom 으로 받지 않는다 — 이 파드가 읽는 이름은
+          # 아래 여섯뿐이고, 파이프라인 자격증명을 테스트 픽스처에 넣을 이유가 없다.
+          env:
+            # LogMiner 의 전제조건 두 가지. 이미지가 DB 생성 시점에 적용한다
+            # (초기화 훅보다 앞이라 스크립트에서 다시 하지 않는다).
+            - name: ENABLE_ARCHIVELOG
+              value: "true"
+            - name: ENABLE_FORCE_LOGGING
+              value: "true"
+            # PDB 안에 만들어지는 업무 스키마 겸 계정 — 테이블의 소유자다
+            - name: APP_USER
+              value: "${app_user}"
+            - name: APP_USER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: test-rdb-secrets
+                  key: APP_USER_PASSWORD
+            - name: ORACLE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: test-rdb-secrets
+                  key: ORACLE_PASSWORD
+            # 초기화 스크립트가 c##dbzuser 를 만들 때만 쓴다(SQL 안에 비밀번호를 두지 않으려는 것)
+            - name: DBZ_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: test-rdb-secrets
+                  key: DBZ_PASSWORD
+          volumeMounts:
+            - name: data
+              mountPath: /opt/oracle/oradata
+            # 첫 기동(빈 볼륨)에만 실행되는 초기화 훅
+            - name: initdb
+              mountPath: /container-entrypoint-initdb.d
+              readOnly: true
+          # 이미지가 주는 healthcheck 를 그대로 쓴다 — 리스너 포트가 아니라 "PDB 가 OPEN 이고
+          # 초기화 스크립트까지 끝났는가"를 본다(그 사이 상태마다 다른 코드를 돌려준다).
+          startupProbe:
+            exec:
+              command: ["/bin/bash", "-c", "/opt/oracle/healthcheck.sh"]
+            periodSeconds: 15
+            timeoutSeconds: 10
+            successThreshold: 1
+            # 빈 볼륨 첫 기동은 DB 이동 + ARCHIVELOG 전환 + 초기화 스크립트를 다 거친다.
+            # 15초 × 60 = 15분 — 넉넉히 두어도 성공하면 그 즉시 다음 단계로 넘어간다.
+            failureThreshold: 60
+          readinessProbe:
+            exec:
+              command: ["/bin/bash", "-c", "/opt/oracle/healthcheck.sh"]
+            periodSeconds: 20
+            timeoutSeconds: 10
+            successThreshold: 1
+            failureThreshold: 3
+          livenessProbe:
+            exec:
+              command: ["/bin/bash", "-c", "/opt/oracle/healthcheck.sh"]
+            periodSeconds: 30
+            timeoutSeconds: 10
+            successThreshold: 1
+            # startupProbe 가 성공한 뒤에야 돌기 시작하므로 initialDelaySeconds 가 필요 없다.
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: "${cpu_request}"
+              memory: "${memory_request}"
+      # SHUTDOWN IMMEDIATE 가 끝날 시간. 부족하면 다음 기동이 인스턴스 복구로 시작한다.
+      terminationGracePeriodSeconds: 120
+      volumes:
+        - name: initdb
+          configMap:
+            name: cdc-oracle-initdb
+            # ⚠ 실행 비트가 필요하다. 이미지의 run_custom_scripts 는 실행 비트가 없는 .sh 를
+            #   '실행'이 아니라 'source' 하는데, 그러면 스크립트의 set -e 와 exit 가
+            #   entrypoint 자체를 죽인다.
+            # ⚠ 0o755 로 적는다. yamldecode 는 YAML 1.2 라 `0755` 를 8진수가 아니라
+            #   십진수 755 로 읽는데, defaultMode 의 허용 범위는 0~0777(십진 511)이라
+            #   apply 가 검증에서 거부된다(kubectl 로 같은 글자를 넣을 때와 결과가 다르다).
+            defaultMode: 0o755
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          app.kubernetes.io/part-of: data-layer
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        # ⚠ STS 의 volumeClaimTemplate PVC 는 terraform destroy 로 지워지지 않는다 —
+        #   스키마를 갈아엎으려면 PVC 를 손으로 지워야 한다.
+        storageClassName: ${storage_class}
+        resources:
+          requests:
+            storage: ${storage_size}

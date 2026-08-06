@@ -1,0 +1,24 @@
+# ===============================================
+# [data-layer-api Service]
+#   → 외부 노출은 Ingress 가 맡는다(api-ingress.yaml.tftpl) → 여기는 ClusterIP 로 충분하다.
+#   → 이 이름은 외부 호스트명과 글자가 같다(의도한 것) — 파드 안에서는 CoreDNS 가 이
+#     ClusterIP 로, PC 에서는 hosts 가 VIP 로 각각 다르게 푼다.
+# ===============================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: data-layer-api
+  namespace: ${namespace}
+  labels:
+    app: data-layer-api
+    app.kubernetes.io/name: data-layer-api
+    app.kubernetes.io/part-of: data-layer
+spec:
+  type: ClusterIP
+
+  selector:
+    app: data-layer-api
+  ports:
+    - name: http
+      port: ${api_port}
+      targetPort: http

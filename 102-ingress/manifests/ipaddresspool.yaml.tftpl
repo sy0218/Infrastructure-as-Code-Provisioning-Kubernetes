@@ -1,0 +1,20 @@
+# ===============================================
+# [IPAddressPool — MetalLB 가 나눠 줄 수 있는 주소]
+#   → /32 단일 주소다. 이 랩에서 LoadBalancer 가 필요한 것은 인그레스 하나뿐이라
+#     대역을 잡아 두면 남는 주소가 관리 대상만 된다.
+#   ⚠ MetalLB 는 자기 네임스페이스의 CR 만 읽는다 — 다른 곳에 두면 조용히 무시된다.
+# ===============================================
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  # L2Advertisement 가 이 이름으로 풀을 찾는다 — 두 곳이 갈라지지 않도록 같은 local 에서 온다
+  name: ${pool_name}
+  namespace: ${metallb_namespace}
+spec:
+  addresses:
+    - ${vip}/32
+
+  # 주소가 하나뿐이라 자동 배정을 끈다 — 나중에 누군가 type: LoadBalancer 를 하나 더
+  # 만들면 이 VIP 를 먼저 채가고 인그레스가 <pending> 에 빠진다. 끄면 '이름을 대고
+  # 요청한' 서비스만 받아 가고, 오타로 요청이 어긋나면 조용히 넘어가지 않고 멈춰 선다.
+  autoAssign: false

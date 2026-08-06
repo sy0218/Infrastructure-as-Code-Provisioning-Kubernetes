@@ -1,0 +1,24 @@
+# ===============================================
+# [Grafana 데이터 PVC]
+#   → Deployment 는 PVC 를 스스로 만들지 못해 별도 오브젝트로 선언한다.
+#   → Deployment 를 지워도 이 PVC 는 남는다(재배포로 화면 편집분이 날아가지 않게).
+#     다만 terraform destroy 는 이 PVC 까지 지운다 — 메트릭은 다시 쌓이지만 화면에서
+#     만든 대시보드는 아니므로, 먼저 JSON export 를 받아 이미지 provisioning 에 넣는다.
+# ===============================================
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: grafana-data
+  namespace: ${namespace}
+  labels:
+    app: grafana
+    app.kubernetes.io/name: grafana
+    app.kubernetes.io/part-of: data-layer
+spec:
+  accessModes: ["ReadWriteOnce"]
+  # 프로비저닝은 이미지에 구워져 있어 여기 남는 것은 편집분 + grafana.db 뿐이다.
+  # longhorn 인 이유는 Prometheus 와 동일 — 단일 인스턴스의 노드 이동성.
+  storageClassName: ${storage_class}
+  resources:
+    requests:
+      storage: ${storage_size}

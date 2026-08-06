@@ -1,0 +1,149 @@
+# ===============================================
+# [Kafka Connect (Debezium) — Deployment]
+#   → 소스 DB 의 변경(CDC)을 읽어 Kafka 토픽으로 흘린다.
+#   → 커넥터 등록은 기동 후 REST API 로 한다(매니페스트에 없다).
+# ===============================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cdc-connect
+  namespace: ${namespace}
+  labels:
+    app: cdc-connect
+    app.kubernetes.io/name: cdc-connect
+    app.kubernetes.io/part-of: data-layer
+spec:
+  replicas: ${replicas}
+  selector:
+    matchLabels:
+      app: cdc-connect
+  template:
+    metadata:
+      labels:
+        app: cdc-connect
+        app.kubernetes.io/name: cdc-connect
+        app.kubernetes.io/part-of: data-layer
+      annotations:
+        # 소비하는 공용 값(KAFKA_BOOTSTRAP)이 바뀌면 해시가 바뀌어 롤아웃된다
+        checksum/kafka-bootstrap: "${config_hash}"
+    spec:
+      # Service env 자동 주입 차단 — 근거는 CLAUDE.md '쿠버네티스 규약'
+      enableServiceLinks: false
+
+      # 워커가 리밸런스로 태스크를 넘겨줄 시간을 준다(기본 30초면 진행 중 배치가 잘린다).
+      terminationGracePeriodSeconds: 90
+      affinity:
+        podAntiAffinity:
+          # ⚠ required(hard) 로 바꾸지 말 것 — "한 노드에 한 워커"가 강제되면 노드 1대가 죽는 순간
+          #   세 번째 파드가 영구 Pending 이다. 워커는 복제본이 아니라 '일손'이라 겹쳐도 정상이다.
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app: cdc-connect
+      containers:
+        - name: cdc-connect
+          image: ${image}
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: rest
+              containerPort: ${rest_port}
+          envFrom:
+            # Debezium entrypoint 는 정해진 이름과 CONNECT_ 접두 변수만 워커 프로퍼티로
+            # 번역한다 — 나머지 공용 키는 있어도 무해하고, '값의 출처는 한 곳' 규칙을 지킨다.
+            - configMapRef:
+                name: data-layer-env
+            - secretRef:
+                name: data-layer-secrets
+          env:
+            # ⚠ 리더 포워딩의 핵심 — 비리더 워커는 등록 요청을 '리더가 광고한 주소'로 넘긴다.
+            #   고정 문자열이면 세 워커가 같은 주소를 광고해 등록이 엉뚱한 워커로 가 조용히
+            #   실패한다 → 파드마다 자기 podIP 를 광고한다.
+            #   두 변수 모두 지정: entrypoint 가 CONNECT_ 쪽을 HOST_NAME 에서 파생시켜 덮어쓰므로
+            #   값이 어긋나면 안 된다.
+            - name: HOST_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: CONNECT_REST_ADVERTISED_HOST_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+
+            # 브로커 주소의 단일 출처 — 공용 ConfigMap 의 KAFKA_BOOTSTRAP(FQDN)
+            - name: BOOTSTRAP_SERVERS
+              valueFrom:
+                configMapKeyRef:
+                  name: data-layer-env
+                  key: KAFKA_BOOTSTRAP
+
+            # Connect 클러스터 식별자 + 내부 토픽 3종(과 그 복제계수) + REST 리스너
+            - name: GROUP_ID
+              value: "${group_id}"
+            - name: CONFIG_STORAGE_TOPIC
+              value: "${config_storage_topic}"
+            - name: OFFSET_STORAGE_TOPIC
+              value: "${offset_storage_topic}"
+            - name: STATUS_STORAGE_TOPIC
+              value: "${status_storage_topic}"
+            - name: CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR
+              value: "${replication_factor}"
+            - name: CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR
+              value: "${replication_factor}"
+            - name: CONNECT_STATUS_STORAGE_REPLICATION_FACTOR
+              value: "${replication_factor}"
+            - name: CONNECT_LISTENERS
+              value: "http://:${rest_port}"
+            # 광고 포트는 listeners 에서 따라오지 않는다 — entrypoint 가 ADVERTISED_PORT 를 항상
+            # rest.advertised.port 로 내보내며(없으면 8083 하드코딩), 어긋나면 리더 포워딩이 깨진다.
+            - name: ADVERTISED_PORT
+              value: "${rest_port}"
+
+            # ⚠ 지정하지 않으면 connect-distributed.sh 가 -Xmx2G 를 박는다 — limit 을 없앤
+            #   지금은 그것을 막아 줄 상한이 없어 힙만으로 노드 여유를 통째로 먹는다.
+            #   1280m 은 메타스페이스/다이렉트 버퍼 몫을 남겨 둔 값이다.
+            #   (entrypoint 가 HEAP_OPTS → KAFKA_HEAP_OPTS 로 옮겨 준다)
+            - name: HEAP_OPTS
+              value: "-Xms512m -Xmx1280m"
+          # ⚠ 이미지가 커넥터 플러그인을 20종 넘게 싣고 있어 기동 시 스캔에만 수 분이 걸리고,
+          #   그동안 REST 포트는 열리지도 않는다(스캔이 REST 서버 바인드보다 앞이다).
+          #   startupProbe 가 없으면 그 시간이 liveness 예산(90+20×6=210초)을 그대로 갉아먹어
+          #   느린 노드에서 CrashLoop 이 된다 — 실측 150초(ap)라 여유 2배로 300초를 준다.
+          #   startupProbe 가 성공할 때까지 readiness/liveness 는 아예 돌지 않는다.
+          #   ⚠ timeoutSeconds/successThreshold 를 생략하지 말 것 — API 서버가 기본값을 채워 넣는데
+          #     kubernetes_manifest 는 그걸 '계획에 없던 값'으로 보고 apply 를 실패시킨다
+          #     ("unexpected new value ... was null, but now 1").
+          startupProbe:
+            httpGet:
+              path: /
+              port: rest
+            periodSeconds: 10
+            failureThreshold: 30
+            timeoutSeconds: 1
+            successThreshold: 1
+          # /connectors 는 그룹 합류 전에는 응답하지 않는다 →
+          # 리밸런스 중인 워커로 트래픽이 가지 않는다.
+          readinessProbe:
+            httpGet:
+              path: /connectors
+              port: rest
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 6
+          # ⚠ liveness 는 일부러 다른 경로다. "/" 는 워커 버전/클러스터 ID 만 돌려주므로
+          #   그룹 상태·브로커 가용성과 무관하게 응답한다 — /connectors 로 두면 브로커가
+          #   2분 넘게 흔들릴 때 멀쩡한 워커를 죽여 리밸런스를 더 키운다.
+          #   (readiness 가 이미 그 워커를 Service 에서 빼 준다 — 재기동까지 할 이유가 없다)
+          livenessProbe:
+            httpGet:
+              path: /
+              port: rest
+            initialDelaySeconds: 90
+            periodSeconds: 20
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "1Gi"

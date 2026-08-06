@@ -1,0 +1,87 @@
+# ===============================================
+# [Kafka UI — Deployment]
+#   → 토픽·컨슈머 그룹을 브라우저에서 보는 웹 콘솔.
+#   → 브로커 주소와 Schema Registry 주소를 공용 ConfigMap 에서 받는다.
+# ===============================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kafka-ui
+  namespace: ${namespace}
+  labels:
+    app: kafka-ui
+    app.kubernetes.io/name: kafka-ui
+    app.kubernetes.io/part-of: data-layer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kafka-ui
+  template:
+    metadata:
+      labels:
+        app: kafka-ui
+        app.kubernetes.io/name: kafka-ui
+        app.kubernetes.io/part-of: data-layer
+      annotations:
+        # 소비하는 공용 값(KAFKA_BOOTSTRAP 등)이 바뀌면 해시가 바뀌어 롤아웃된다
+        checksum/kafka-bootstrap: "${config_hash}"
+    spec:
+      # Service env 자동 주입 차단 — 근거는 CLAUDE.md '쿠버네티스 규약'
+      enableServiceLinks: false
+
+      containers:
+        - name: kafka-ui
+          image: ${image}
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: ${http_port}
+          envFrom:
+            - configMapRef:
+                name: data-layer-env
+            - secretRef:
+                name: data-layer-secrets
+          env:
+            - name: SERVER_PORT
+              value: "${http_port}"
+            # kafka-ui 는 KAFKA_CLUSTERS_<n>_* 라는 자기 이름 규칙만 읽는다 →
+            # 공용 키를 configMapKeyRef 로 옮겨 담는다(값의 출처는 여전히 한 곳).
+            - name: KAFKA_CLUSTERS_0_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: data-layer-env
+                  key: KAFKA_UI_CLUSTER_NAME
+            - name: KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS
+              valueFrom:
+                configMapKeyRef:
+                  name: data-layer-env
+                  key: KAFKA_BOOTSTRAP
+            - name: KAFKA_CLUSTERS_0_SCHEMAREGISTRY
+              valueFrom:
+                configMapKeyRef:
+                  name: data-layer-env
+                  key: SCHEMA_REGISTRY_URL
+            # 힙 옵션을 주지 않는다 — limit 이 없어 ergonomics 가 노드 MemTotal 의 25%
+            # (2.9Gi 기준 744Mi)를 상한으로 잡고, 이는 노드를 증설하면 함께 커진다.
+            # 고정값을 박으면 그 자동 조정을 잃는다.
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "512Mi"
+          # actuator/health 는 브로커 상태와 무관하게 응답한다 → 브로커가 잠깐 없다고
+          # 모니터링 UI 가 함께 재기동되지 않는다.
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /actuator/health
+              port: http
+            initialDelaySeconds: 60
+            periodSeconds: 20
+            failureThreshold: 6

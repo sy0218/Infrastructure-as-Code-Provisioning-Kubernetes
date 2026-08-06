@@ -1,0 +1,29 @@
+# ===============================================
+# [시크릿 주입 템플릿]
+#  cp secrets.auto.tfvars.example secrets.auto.tfvars
+# 여기 값은 Secret data-layer-secrets 로 들어가 전 워크로드가 envFrom 으로 받는다.
+# 아래는 랩 기본값 — 운영이면 전부 교체할 것.
+# ===============================================
+
+# MinIO ROOT = S3 access/secret key — 로컬 MinIO 설치의 ROOT 계정과 같은 값
+minio_root_user     = "data_layer"
+minio_root_password = "data_layer123!"
+
+# PostgreSQL — 로컬 설치의 슈퍼유저. PG DSN 3종 + Iceberg 카탈로그 URI 도 이 값으로 조립된다
+postgres_user     = "data_layer"
+postgres_password = "data_layer123!"
+
+# collect_job.config 암호화 키(Fernet)
+# Airflow 쪽 COLLECTOR_CRYPTO_KEY 와 반드시 같은 값
+collector_crypto_key = "u4_J9Xv9V0XmC_Y7B3V-J1oW7vL6wK2z8x3c4v5b6n7="
+
+# data-layer-api /api/* 인증 키
+data_layer_api_key = "b8f79dd470abff9e6b2c2de6b57f1f46081352f03aff4ce3bd1eb359cdbd1abf"
+
+# Neo4j
+platform_neo4j_user     = "neo4j"
+platform_neo4j_password = "datalayer-neo4j"
+
+# Grafana 초기 관리자
+grafana_admin_user     = "admin"
+grafana_admin_password = "admin"

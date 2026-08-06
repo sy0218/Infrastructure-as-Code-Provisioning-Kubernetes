@@ -1,0 +1,52 @@
+# ===============================================
+# [Lineage Consumer — Deployment]
+#   → lineage-topic 을 읽어 데이터 계보를 PostgreSQL 에 기록한다.
+# ===============================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cdm-lineage-consumer
+  namespace: ${namespace}
+  labels:
+    app: cdm-lineage-consumer
+    app.kubernetes.io/name: cdm-lineage-consumer
+    app.kubernetes.io/part-of: data-layer
+spec:
+  replicas: ${replicas}
+  selector:
+    matchLabels:
+      app: cdm-lineage-consumer
+  template:
+    metadata:
+      labels:
+        app: cdm-lineage-consumer
+        app.kubernetes.io/name: cdm-lineage-consumer
+        app.kubernetes.io/part-of: data-layer
+    spec:
+      # Service env 자동 주입 차단 — 근거는 CLAUDE.md '쿠버네티스 규약'
+      enableServiceLinks: false
+
+      # 배치 커밋 전에 잘리지 않도록 유예를 준다(근거는 variables.tf)
+      terminationGracePeriodSeconds: ${termination_grace_seconds}
+      containers:
+        - name: cdm-lineage-consumer
+          image: ${image}
+          imagePullPolicy: IfNotPresent
+          # LINEAGE_* / KAFKA_BOOTSTRAP / SCHEMA_REGISTRY_URL 전부 공용 ConfigMap 에 있다
+          envFrom:
+            - configMapRef:
+                name: data-layer-env
+            - secretRef:
+                name: data-layer-secrets
+          env:
+            # 공용 ConfigMap 의 LOG_LEVEL 을 한 워크로드가 독점할 수 없어 계보 워커 전용 키에서 이름만 옮겨 담는다
+            - name: LOG_LEVEL
+              valueFrom:
+                configMapKeyRef:
+                  name: data-layer-env
+                  key: LINEAGE_LOG_LEVEL
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+          # probe 없음 — 리슨 포트가 없고 섣부른 liveness 가 배치를 자른다(매퍼/컨슈머와 동일).

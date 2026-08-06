@@ -1,0 +1,94 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: ${namespace}
+  labels:
+    app: prometheus
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/part-of: data-layer
+data:
+  # 이 키 이름이 곧 마운트되는 파일 이름이다(/etc/prometheus/prometheus.yml) —
+  # StatefulSet 의 --config.file 인자와 짝을 맞춰야 한다.
+  #
+  # 아래 스크랩 잡 4개 — kafka-jmx 만 static, 나머지는 kubernetes_sd 가 런타임에 발견한다:
+  #   alloy-node     — 서버 실측치      (노드마다 1개, DaemonSet)
+  #   alloy-cadvisor — 컨테이너 리소스  (노드마다 1개, DaemonSet)
+  #   kafka-exporter — 토픽/offset/lag  (1개. 클러스터 전체를 본다)
+  #   kafka-jmx      — 브로커 JVM/MBean (브로커마다 1개 — 브로커는 클러스터 밖이라 static)
+  # 주기는 global 하나로 통일한다. 특정 잡만 늦추려면 그 잡에 scrape_interval 을 붙인다.
+  #
+  # ⚠ kubernetes_sd 잡의 `__meta_kubernetes_pod_node_name` → `node` relabel 을 지우지 말 것.
+  #   대시보드가 `by(node)` 로 그룹화하므로, 없으면 타깃도 쿼리도 정상인 채 패널만 조용히 빈다.
+  #   static 잡은 kafka-jmx 처럼 타깃 labels 로 node 를 직접 부여한다.
+  #
+  # ⚠ 여기 아래는 렌더되어 클러스터 ConfigMap 에 그대로 실린다 — 설명은 이 줄 위에 적을 것.
+  prometheus.yml: |
+    global:
+      scrape_interval: ${global_scrape_interval}
+
+    scrape_configs:
+      # 서버(호스트) 메트릭 — alloy 는 hostNetwork 라 파드 IP = 노드 IP 다.
+      - job_name: alloy-node
+        metrics_path: ${alloy_node_metrics_path}
+        kubernetes_sd_configs:
+          - role: pod
+            # 다른 네임스페이스의 동명 라벨 파드가 딸려 들어오지 않도록 범위를 좁힌다
+            namespaces:
+              names: [${namespace}]
+        relabel_configs:
+          # 포트 이름까지 keep 하는 이유: role=pod 는 '선언된 컨테이너 포트마다' 타깃을
+          # 만든다 — 포트가 추가되면 같은 파드가 두 번 스크랩되어 시계열이 중복된다.
+          - source_labels: [__meta_kubernetes_pod_label_app, __meta_kubernetes_pod_container_port_name]
+            regex: alloy;http-metrics
+            action: keep
+          # 대시보드 생명줄 — 위 배너 참조
+          - source_labels: [__meta_kubernetes_pod_node_name]
+            target_label: node
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+
+      # 컨테이너 메트릭
+      - job_name: alloy-cadvisor
+        metrics_path: ${alloy_cadvisor_metrics_path}
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names: [${namespace}]
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app, __meta_kubernetes_pod_container_port_name]
+            regex: alloy;http-metrics
+            action: keep
+          - source_labels: [__meta_kubernetes_pod_node_name]
+            target_label: node
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+        metric_relabel_configs:
+          # cgroup 루트(name 라벨이 빈 시리즈)는 컨테이너가 아닌데 container_* 이름을 달고
+          # 나와 랭킹 패널을 오염시킨다. 호스트 지표는 alloy-node 담당.
+          - source_labels: [name]
+            regex: ""
+            action: drop
+
+      # Kafka 토픽/offset/컨슈머그룹 lag — exporter 하나가 클러스터 전체를 보므로
+      # 유일하게 endpoints role 을 쓴다(Service 경유 = readiness 통과한 파드만 타깃).
+      - job_name: kafka-exporter
+        kubernetes_sd_configs:
+          - role: endpoints
+            namespaces:
+              names: [${namespace}]
+        relabel_configs:
+          # 대상이 몇 개 안 되므로 annotation 자동 발견 대신 Service/포트 이름으로 명시한다
+          - source_labels: [__meta_kubernetes_service_name, __meta_kubernetes_endpoint_port_name]
+            regex: kafka-exporter;metrics
+            action: keep
+          - source_labels: [__meta_kubernetes_pod_node_name]
+            target_label: node
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+
+      # Kafka 브로커 JVM/MBean — 브로커는 클러스터 밖(ADR 0, Ansible 로컬 설치)이라
+      # kubernetes_sd 로 발견할 수 없다 → 노드 IP static 타깃(브로커 안 javaagent :9404).
+      # node/instance 라벨은 타깃에 직접 부여한다(instance=kafka-0/1/2 — 기존 시계열 연속성).
+      - job_name: kafka-jmx
+        static_configs: ${jsonencode([for t in kafka_jmx_targets : { targets = [t.address], labels = { node = t.node, instance = t.instance } }])}

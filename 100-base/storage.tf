@@ -1,8 +1,9 @@
-# 동적 스토리지 프로비저너
-# kubeadm 클러스터엔 기본 StorageClass 가 없어서
-# PVC(Harbor registry/db, 이후 모니터링 스택의 TSDB 등)가 바인딩되지 못한다.
-# 노드 로컬 디스크(/opt/local-path-provisioner)에 PV 를 만들어 주는 방식.
-# 클러스터 공용 기반이므로 어떤 앱 스택보다 먼저(001) 적용한다.
+# ===============================================
+# [local-path-provisioner — 기본 StorageClass]
+#   → kubeadm 엔 기본 StorageClass 가 없어 storageClassName 을 적지 않은 PVC 는 전부 Pending 이다.
+#   → PV 는 파드가 뜬 노드의 로컬 디스크(/opt/local-path-provisioner)에 만들어진다 → 볼륨이 노드에 묶인다.
+#   ⚠ 안전망일 뿐이다. 실제로 여기 떨어진 PVC 가 하나 있다(harbor 의 trivy 캐시) — 200-harbor 참조.
+# ===============================================
 resource "helm_release" "local_path_provisioner" {
   name             = "local-path-provisioner"
   repository       = "https://charts.containeroo.ch"
@@ -13,7 +14,6 @@ resource "helm_release" "local_path_provisioner" {
 
   values = [yamlencode({
     storageClass = {
-      # storageClassName 을 명시하지 않은 PVC 도 local-path 로 바인딩
       defaultClass = true
     }
   })]

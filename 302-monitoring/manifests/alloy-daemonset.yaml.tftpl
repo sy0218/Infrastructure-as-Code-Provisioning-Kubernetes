@@ -1,0 +1,139 @@
+# ===============================================
+# [Alloy DaemonSet]
+#   → 노드마다 1개씩 떠서 서버(node) + 컨테이너(cadvisor) 메트릭을 '노출만' 한다.
+#     저장/스크랩은 Prometheus 가 pull 로 가져간다.
+# ===============================================
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: alloy
+  namespace: ${namespace}
+  labels:
+    app: alloy
+    app.kubernetes.io/name: alloy
+    app.kubernetes.io/part-of: data-layer
+spec:
+  selector:
+    matchLabels:
+      app: alloy
+  template:
+    metadata:
+      labels:
+        # ⚠ 이 라벨이 Prometheus pod role SD 의 keep 셀렉터다 —
+        #   바꾸면 alloy-node / alloy-cadvisor 두 잡의 타깃이 동시에 0 이 된다.
+        app: alloy
+        app.kubernetes.io/name: alloy
+        app.kubernetes.io/part-of: data-layer
+      annotations:
+        # ConfigMap 만 바뀌면 파드는 다시 만들어지지 않고 Alloy 도 파일을 다시 읽지 않는다.
+        # 설정 해시를 심어 두면 설정 변경이 곧 롤아웃이 된다.
+        checksum/config: "${config_hash}"
+    spec:
+      # Service env 자동 주입 차단 — 근거는 CLAUDE.md '쿠버네티스 규약'
+      enableServiceLinks: false
+
+      # hostNetwork 는 성능이 아니라 기능 사유다. node exporter 가 읽는 네트워크 지표
+      # (node_network_*, 소켓/conntrack)는 netns 별로 달라, 파드 netns 안에서는 가상 eth0
+      # 통계만 나오고 대시보드가 쓰는 실제 NIC 가 아예 없다(/proc, /sys 마운트로도 안 된다).
+      # 짝으로 dnsPolicy 를 바꿔야 클러스터 내부 이름 해소가 유지된다.
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      # control-plane 노드에도 떠야 모니터링 사각지대가 없다(taint 자체는 유지)
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: alloy
+          image: ${image}
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            # cgroup 트리 순회(cadvisor) + 호스트 /proc 읽기(node)에 필요.
+            # capability 로 좁히면 커널/런타임 버전에 따라 일부 메트릭이 조용히 0 이 된다.
+            privileged: true
+          # 이미지가 FROM 한 줄이 되면서 기동 커맨드의 소유자가 여기로 넘어왔다.
+          # command 를 명시하면 베이스 이미지 ENTRYPOINT 가 무엇이든 이 인자 그대로 뜬다 —
+          # 이미지 쪽 기본값에 기대지 않는 편이 안전하다.
+          command: ["/bin/alloy"]
+          args:
+            - run
+            - --server.http.listen-addr=0.0.0.0:${alloy_port}
+            - /etc/alloy/config.alloy
+          # env / envFrom 이 없다: 설정은 ConfigMap alloy-config 이 전부이고,
+          # 전 노드에 뜨는 특권 파드에 DB/S3 자격증명을 뿌릴 이유도 없다.
+          ports:
+            # ⚠ 포트 이름 http-metrics 가 Prometheus SD 의 두 번째 keep 조건이다.
+            #   hostNetwork 라 실제 바인딩은 바뀌지 않지만, role=pod SD 는 '선언된 포트'를
+            #   보고 타깃을 만들므로 반드시 있어야 한다.
+            - name: http-metrics
+              containerPort: ${alloy_port}
+              protocol: TCP
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+          # 메트릭 경로로 판정한다 — /-/ready 만 보면 exporter 가 죽어도 통과한다.
+          readinessProbe:
+            httpGet:
+              path: ${node_metrics_path}
+              port: http-metrics
+            initialDelaySeconds: 20
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 5
+          livenessProbe:
+            httpGet:
+              path: /-/ready
+              port: http-metrics
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 5
+          volumeMounts:
+            # 수집 설정 — ConfigMap 을 디렉토리째 마운트한다(subPath 금지).
+            #   1) 베이스 이미지가 /etc/alloy/config.alloy 를 이미 갖고 있어 통째로 덮어야 한다.
+            #   2) subPath 마운트는 ConfigMap 이 갱신돼도 파일이 바뀌지 않는다 —
+            #      설정을 고쳐도 옛 파일로 계속 도는 조용한 파손이 된다.
+            - name: config
+              mountPath: /etc/alloy
+              readOnly: true
+            # node exporter — 호스트 프로세스/커널 통계
+            - name: proc
+              mountPath: /host/proc
+              readOnly: true
+            # node(sysfs) + cadvisor(cgroup) 공용.
+            # mountPropagation 이 없으면 기동 시점 스냅샷만 보여 새 컨테이너가 안 잡힌다.
+            - name: sys
+              mountPath: /sys
+              readOnly: true
+              mountPropagation: HostToContainer
+            # node exporter — 파일시스템 사용률(node_filesystem_*)
+            - name: rootfs
+              mountPath: /rootfs
+              readOnly: true
+              mountPropagation: HostToContainer
+            # cadvisor 의 컨테이너 메타데이터 경로. docker.sock 은 마운트하지 않는다 —
+            # 런타임이 containerd 라 노드에 없는 경로이고, hostPath 가 없는 경로를
+            # 디렉토리로 만들어 조용히 잘못된 상태가 된다.
+            - name: containerd-sock
+              mountPath: /run/containerd/containerd.sock
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: alloy-config
+        - name: proc
+          hostPath:
+            path: /proc
+        - name: sys
+          hostPath:
+            path: /sys
+        - name: rootfs
+          hostPath:
+            path: /
+        - name: containerd-sock
+          hostPath:
+            path: /run/containerd/containerd.sock
+            # type 을 명시하면 소켓이 아닐 때 파드가 뜨지 않아 문제를 즉시 알 수 있다
+            # (생략하면 kubelet 이 디렉토리를 만들어 버린다).
+            type: Socket

@@ -1,0 +1,31 @@
+# ===============================================
+# [Airflow api-server — 브라우저 진입점]
+#   ⚠ 이 Host 는 AIRFLOW__API__BASE_URL 과 글자 그대로 같아야 한다(airflow-secret.tf).
+#     Airflow 는 로그인 후 그 값으로 절대 URL 을 만들어 리다이렉트하므로, 둘이 어긋나면
+#     로그인 화면까지는 뜨는데 인증 직후 접속 불가로 튄다.
+#   → 이 규칙은 UI 와 REST 를 같이 태운다(같은 프로세스·같은 포트). 내부 Execution API 는
+#     인그레스를 타지 않는다 — scheduler 는 ClusterIP 로 직접 부른다.
+# ===============================================
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: airflow-apiserver
+  namespace: ${namespace}
+  labels:
+    app: airflow-apiserver
+    app.kubernetes.io/name: airflow
+    app.kubernetes.io/component: apiserver
+    app.kubernetes.io/part-of: data-layer
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: ${host}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: airflow-apiserver
+                port:
+                  number: ${apiserver_port}

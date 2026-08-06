@@ -1,0 +1,29 @@
+# ===============================================
+# [Airflow api-server Service — 외부 UI + 내부 Execution API]
+#   → 외부: Ingress 가 Host 헤더로 이 Service 를 찾는다. VIP 는 노드가 죽으면 MetalLB 가
+#     옮겨 주므로 접속 주소가 그대로다(airflow-apiserver-ingress.yaml.tftpl).
+#   → 내부: ClusterIP 이름:포트(airflow-apiserver:${apiserver_port})는 불변 계약이다 —
+#     scheduler 의 Execution API 경로가 여기에 걸려 있다.
+#   ⚠ 외부 주소(Ingress 의 host)는 AIRFLOW__API__BASE_URL 과 반드시 같아야 한다
+#     (airflow-secret.tf 참조). 어긋나면 로그인 직후 리다이렉트가 엉뚱한 곳으로 튄다.
+# ===============================================
+apiVersion: v1
+kind: Service
+metadata:
+  # ⚠ 이름이 계약이다 — AIRFLOW__CORE__EXECUTION_API_SERVER_URL 이 이 이름을 가리킨다
+  name: airflow-apiserver
+  namespace: ${namespace}
+  labels:
+    app: airflow-apiserver
+    app.kubernetes.io/name: airflow
+    app.kubernetes.io/component: apiserver
+    app.kubernetes.io/part-of: data-layer
+spec:
+  type: ClusterIP
+
+  selector:
+    app: airflow-apiserver
+  ports:
+    - name: http
+      port: ${apiserver_port}
+      targetPort: http

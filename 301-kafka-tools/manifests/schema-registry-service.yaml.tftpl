@@ -1,0 +1,23 @@
+# ===============================================
+# [Schema Registry — Service]
+#   → 이 이름이 공용 ConfigMap 의 SCHEMA_REGISTRY_URL 호스트 부분이 된다.
+#   → 클러스터 안에서만 쓰므로 ClusterIP.
+# ===============================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: schema-registry
+  namespace: ${namespace}
+  labels:
+    app: schema-registry
+    app.kubernetes.io/name: schema-registry
+    app.kubernetes.io/part-of: data-layer
+spec:
+  # 이 이름이 SCHEMA_REGISTRY_URL 의 호스트 부분이다 → 매퍼/컨슈머/kafka-ui 가 여기로 붙는다
+  type: ClusterIP
+  selector:
+    app: schema-registry
+  ports:
+    - name: http
+      port: ${http_port}
+      targetPort: http

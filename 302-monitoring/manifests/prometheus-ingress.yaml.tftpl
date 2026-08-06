@@ -1,0 +1,28 @@
+# ===============================================
+# [Prometheus — 디버깅 UI 진입점]
+#   ⚠ 인증이 없다. 이 이름을 아는 사람은 전 메트릭을 조회할 수 있다(내부망 전제).
+#     NodePort 시절에는 노드 IP 세 곳에 포트가 열려 있었지만, 이제는 VIP 에 이 Host
+#     헤더로 온 요청만 닿는다 — 노출면이 좁아졌을 뿐 인증이 생긴 것은 아니다.
+# ===============================================
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: prometheus
+  namespace: ${namespace}
+  labels:
+    app: prometheus
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/part-of: data-layer
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: ${host}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: prometheus
+                port:
+                  number: ${prometheus_port}

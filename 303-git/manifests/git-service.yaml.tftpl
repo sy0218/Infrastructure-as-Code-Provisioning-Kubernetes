@@ -1,0 +1,31 @@
+# ===============================================
+# [data-layer-git Service — 안팎 두 역할을 겸한다]
+#   안(git-sync) → ClusterIP  git://data-layer-git.<ns>.svc.cluster.local:${daemon_port}
+#   밖(로컬 push) → NodePort  git://data-layer-git:${nodeport}
+#   → 이름을 외부 호스트명과 같게 둔 것은 의도다(305-api 와 같은 형태). 파드 안에서는
+#     CoreDNS 가 ClusterIP 로, PC 에서는 hosts 가 노드 IP 로 각각 다르게 푼다.
+# ===============================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: data-layer-git
+  namespace: ${namespace}
+  labels:
+    app: data-layer-git
+    app.kubernetes.io/name: data-layer-git
+    app.kubernetes.io/part-of: data-layer
+spec:
+  type: NodePort
+
+  # ⚠ 기본값이지만 일부러 명시한다 — Local 로 바꾸면 파드가 있는 노드만 응답하는데
+  #   replica 1 이라 그 노드가 곧 SPOF 가 되어 HA 가 깨진다.
+  externalTrafficPolicy: Cluster
+
+  selector:
+    app: data-layer-git
+  ports:
+    - name: git
+      # NodePort 는 외부 접속을 '추가'할 뿐이라 내부 계약(Service DNS:포트)은 그대로 둔다
+      port: ${daemon_port}
+      targetPort: git
+      nodePort: ${nodeport}

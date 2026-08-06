@@ -1,0 +1,74 @@
+# ===============================================
+# [Kafka Exporter — Deployment]
+#   → 토픽·오프셋·컨슈머 Lag 을 Prometheus 형식으로 노출한다.
+#   → 브로커는 클러스터 밖(ADR 0)이라 공용 ConfigMap 의 KAFKA_BOOTSTRAP 으로 접속한다.
+# ===============================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kafka-exporter
+  namespace: ${namespace}
+  labels:
+    app: kafka-exporter
+    app.kubernetes.io/name: kafka-exporter
+    app.kubernetes.io/part-of: data-layer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kafka-exporter
+  template:
+    metadata:
+      labels:
+        app: kafka-exporter
+        app.kubernetes.io/name: kafka-exporter
+        app.kubernetes.io/part-of: data-layer
+      annotations:
+        # KAFKA_BOOTSTRAP 이 바뀌면 해시가 바뀌어 롤아웃된다 (envFrom 은 재기동 필요)
+        checksum/kafka-bootstrap: "${config_hash}"
+    spec:
+      # Service env 자동 주입 차단 — 근거는 CLAUDE.md '쿠버네티스 규약'
+      enableServiceLinks: false
+
+      containers:
+        - name: kafka-exporter
+          image: ${image}
+          imagePullPolicy: IfNotPresent
+          # kafka_exporter 는 브로커마다 --kafka.server 를 따로 받는다 →
+          # 콤마로 이어진 KAFKA_BOOTSTRAP 을 셸에서 쪼개 플래그 목록으로 편다.
+          command:
+            - /bin/sh
+            - -c
+          args:
+            - |
+              exec /bin/kafka_exporter \
+                $(echo "$${KAFKA_BOOTSTRAP}" | tr ',' '\n' | sed 's/^/--kafka.server=/' | tr '\n' ' ') \
+                --web.listen-address=:${exporter_port}
+          ports:
+            - name: metrics
+              containerPort: ${exporter_port}
+          envFrom:
+            - configMapRef:
+                name: data-layer-env
+            - secretRef:
+                name: data-layer-secrets
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+          # 기동 시점에 브로커에 못 붙으면 그대로 종료한다 → 브로커보다 먼저 뜨면
+          # CrashLoopBackOff 를 돌다 스스로 정상화된다(그래서 대기 initContainer 가 없다).
+          readinessProbe:
+            httpGet:
+              path: /
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /
+              port: metrics
+            initialDelaySeconds: 60
+            periodSeconds: 60
+            failureThreshold: 3

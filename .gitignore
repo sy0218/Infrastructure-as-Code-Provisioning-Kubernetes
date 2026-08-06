@@ -1,20 +1,14 @@
 # Terraform 작업 파일 (프로바이더 바이너리 캐시)
 .terraform/
 
-# state — 시크릿 값이 평문으로 남으므로 커밋 금지
-*.tfstate
-*.tfstate.*
-*.tfstate.backup
-
 # crash 로그
 crash.log
 crash.*.log
 
-# 시크릿이 들어갈 수 있는 오버라이드 파일
-*.auto.tfvars
-override.tf
-override.tf.json
-
-# 클로드 코드 관련 파일
-CLAUDE.md
-COMMIT_CONVENTION.md
+# ⚠ 이 저장소는 공개 전제다. tfstate 와 *.auto.tfvars 를 일부러 무시하지 않는다
+#   (운영자 결정) — 랩 자격증명이라 노출돼도 실피해가 없다는 판단이다.
+#   전제가 바뀌면(실계정 사용·외부 노출) 아래 4줄을 되살리고 자격증명을 전량 교체할 것.
+#     *.tfstate
+#     *.tfstate.*
+#     *.auto.tfvars
+#     override.tf / override.tf.json

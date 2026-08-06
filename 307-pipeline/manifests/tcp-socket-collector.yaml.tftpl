@@ -1,0 +1,80 @@
+# ===============================================
+# [TCP Socket Collector — Deployment]
+#   → 장비가 TCP 로 밀어 넣는 원시 데이터를 받아 Kafka 로 넘긴다.
+#   → 장비가 특정 노드로 보내므로 ingest=true 라벨 노드에만 뜬다(저장소 유일의 nodeSelector).
+# ===============================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tcp-socket-collector
+  namespace: ${namespace}
+  labels:
+    app: tcp-socket-collector
+    app.kubernetes.io/name: tcp-socket-collector
+    app.kubernetes.io/part-of: data-layer
+spec:
+  # 1개 고정 — 리스너 포트가 노드 호스트에 직접 열리므로 같은 노드에 2개가 뜨면
+  # 나중 파드가 bind 실패로 CrashLoop 에 빠진다.
+  replicas: ${replicas}
+  strategy:
+    # 기본값 RollingUpdate 는 새 파드가 Ready 가 된 뒤 옛 파드를 내린다 → hostNetwork 에서는
+    # 두 파드가 같은 포트를 놓고 겹쳐 롤아웃이 멈춘다. Recreate 는 먼저 내리고 올린다
+    # (짧은 수신 공백을 대가로 재바인드 충돌이 없다 — 그동안 장비 push 는 거부된다).
+    type: Recreate
+  selector:
+    matchLabels:
+      app: tcp-socket-collector
+  template:
+    metadata:
+      labels:
+        # ⚠ 계약 — data-layer-api 의 '실시간 등록' 화면이 이 라벨로 수집기 파드를 찾아
+        #   상태를 표시한다(공용 ConfigMap 의 TCP_SOCKET_CONTAINER 값과 짝).
+        app: tcp-socket-collector
+        app.kubernetes.io/name: tcp-socket-collector
+        app.kubernetes.io/part-of: data-layer
+    spec:
+      # Service env 자동 주입 차단 — 근거는 CLAUDE.md '쿠버네티스 규약'
+      enableServiceLinks: false
+
+      # ===============================================
+      # [hostNetwork — 이 스택의 유일한 구조적 예외]
+      #   → 리슨 포트가 코드에도 매니페스트에도 없다. 화면이 realtime_source 에 소스를 등록하면 수집기가 그 표를 5초마다 재조회해 리스너를 열고 닫는다.
+      #   → 포트를 정적으로 '선언'해야 성립하는 Service 와는 원리적으로 맞물리지 않는다(NodePort 로 흉내내도 대역 30000-32767 제한에 걸린다).
+      #   → 대가: 스케줄러가 이 포트들을 모르고(충돌 방어선은 API 의 포트 등록 검증뿐), ingest 노드가 전부 죽으면 수집이 멈추며, 평문 소켓이라 방화벽이 필수다.
+      # ===============================================
+      hostNetwork: true
+      # hostNetwork 파드는 노드의 resolv.conf 를 써서 클러스터 DNS 를 잃는다.
+      # schema-registry 등 svc DNS 주소를 부르므로 이 줄이 필요하다(PG·Kafka 는 노드 IP 라 무관).
+      dnsPolicy: ClusterFirstWithHostNet
+      # 뜰 노드를 좁히는 이유와 라벨 값의 출처는 variables.tf 의 tcp_socket_node_selector
+      nodeSelector: ${node_selector}
+      containers:
+        - name: tcp-socket-collector
+          image: ${image}
+          imagePullPolicy: IfNotPresent
+          # ports: 를 선언하지 않는다 — 포트 집합이 런타임에 정해지고,
+          # hostNetwork 에서 containerPort 는 문서 효과뿐이라 틀린 값은 오해만 남긴다.
+          envFrom:
+            - configMapRef:
+                name: data-layer-env
+            - secretRef:
+                name: data-layer-secrets
+          env:
+            # 이름이 어긋나는 값만 옮겨 담는다. 수집기 전용 스키마를 따로 두지 않는 이유는
+            # 등록 표(realtime_source)가 collect_job 과 같은 스키마에 있기 때문이다.
+            - name: TCP_SOCKET_DB_SCHEMA
+              valueFrom:
+                configMapKeyRef:
+                  name: data-layer-env
+                  key: COLLECTOR_DB_SCHEMA
+            - name: LOG_LEVEL
+              valueFrom:
+                configMapKeyRef:
+                  name: data-layer-env
+                  key: TCP_SOCKET_LOG_LEVEL
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+          # probe 없음 — 리슨 포트가 소스마다 달라 프로브 대상을 고정할 수 없다.
+          # 수신 여부는 로그와 화면 상태로 본다.

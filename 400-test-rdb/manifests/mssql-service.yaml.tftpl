@@ -1,0 +1,25 @@
+# ===============================================
+# [cdc-mssql Service]
+#   → 이 이름이 계약이다 — 커넥터 JSON 의 database.hostname 과 Airflow 커넥션 cdc_mssql
+#     이 이 FQDN 을 가리킨다. docker 시절의 192.168.56.201:11433 을 대체한다.
+#   → ClusterIP 뿐이다. 사람이 붙을 때는 옛 포트를 그대로 재현한다:
+#       kubectl -n ${namespace} port-forward svc/cdc-mssql 11433:${port}
+# ===============================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: cdc-mssql
+  namespace: ${namespace}
+  labels:
+    app: cdc-mssql
+    app.kubernetes.io/name: cdc-mssql
+    app.kubernetes.io/component: test-rdb
+    app.kubernetes.io/part-of: data-layer
+spec:
+  type: ClusterIP
+  selector:
+    app: cdc-mssql
+  ports:
+    - name: mssql
+      port: ${port}
+      targetPort: mssql

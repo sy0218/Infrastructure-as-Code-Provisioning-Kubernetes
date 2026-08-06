@@ -1,0 +1,36 @@
+# ===============================================
+# [data-layer-api — 브라우저 진입점]
+#   → 한 프로세스가 "/"(관리 화면)와 "/api"(REST)를 같이 서빙하므로 규칙도 하나면 된다.
+#   ⚠ 이 이름에 닿으면 인증 없는 관리 화면이 열린다(REST 만 X-API-Key) — 내부망 전제.
+# ===============================================
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: data-layer-api
+  namespace: ${namespace}
+  labels:
+    app: data-layer-api
+    app.kubernetes.io/name: data-layer-api
+    app.kubernetes.io/part-of: data-layer
+  annotations:
+    # ⚠ 기본값이 1m 이다. DQ 규칙·도메인 설정 파일을 올리는 경로가 있어 그대로 두면
+    #   화면은 멀쩡한데 업로드만 413 으로 죽는다(늦게 발견되는 종류의 고장이다).
+    nginx.ingress.kubernetes.io/proxy-body-size: "${proxy_body_size}"
+    # ⚠ 기본값이 60초다. DQ '적용'은 매퍼 드레인(180) + 재기동 대기(60)를 HTTP 요청 안에서
+    #   기다리므로 그대로 두면 60초에 504 가 뜬다 — 그때 매퍼 delete 는 이미 나간 뒤라
+    #   사용자가 재시도하면 드레인이 겹친다. 실제로 걸리는 것은 read 이고 send 는 대칭용이다.
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "${proxy_read_timeout}"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "${proxy_read_timeout}"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: ${host}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: data-layer-api
+                port:
+                  number: ${api_port}

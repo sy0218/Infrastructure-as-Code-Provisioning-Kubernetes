@@ -1,0 +1,76 @@
+# ===============================================
+# [KubernetesExecutor 태스크 파드 원형]
+#   → 태스크 하나당 이 스펙으로 파드가 하나 뜨고, 끝나면 사라진다(상주 워커가 없다).
+#   → 이 파일은 K8s 오브젝트가 아니라 ConfigMap 에 담기는 '문서'다 —
+#     scheduler 가 파일로 읽어(AIRFLOW__KUBERNETES_EXECUTOR__POD_TEMPLATE_FILE) 파드를 찍는다.
+#
+# ⚠ 컨테이너 이름은 반드시 `base` 다. Airflow 가 이 이름으로 컨테이너를 찾아 실행 커맨드를
+#   주입하므로, 다른 이름이면 태스크가 뜨자마자 실패한다. command/args 를 여기 적지 않는 것도
+#   같은 이유다(Airflow 가 채운다).
+#
+# ⚠ git-sync 를 사이드카로 넣지 말 것. 사이드카는 스스로 끝나지 않아 태스크 파드가 영원히
+#   Running 으로 남는다 = 태스크가 끝나지 않는다. 코드는 initContainer 가 한 번만 받아 온다.
+# ===============================================
+apiVersion: v1
+kind: Pod
+metadata:
+  labels:
+    app.kubernetes.io/name: airflow
+    app.kubernetes.io/component: worker
+    app.kubernetes.io/part-of: data-layer
+spec:
+  restartPolicy: Never
+
+  # 코어 4종과 같은 이유로 끈다 — 네임스페이스의 Service env 가 컨테이너 설정을 덮어쓴다
+  enableServiceLinks: false
+
+  securityContext:
+    runAsUser: ${run_as_user}
+    runAsGroup: ${fs_group}
+    fsGroup: ${fs_group}
+
+  initContainers:
+    - name: git-sync-init
+      image: ${gitsync_image}
+      env:
+        - name: GITSYNC_REPO
+          value: "${git_repo}"
+        - name: GITSYNC_REF
+          value: "${git_ref}"
+        - name: GITSYNC_ROOT
+          value: "/git"
+        - name: GITSYNC_LINK
+          value: "repo"
+        - name: GITSYNC_ONE_TIME
+          value: "true"
+        - name: HOME
+          value: "/tmp"
+      volumeMounts:
+        - name: git-repo
+          mountPath: /git
+
+  containers:
+    - name: base
+      image: ${image}
+      imagePullPolicy: IfNotPresent
+      # ⚠ 세 개가 다 필요하다 — airflow-env 가 빠지면 메타DB 접속·fernet·JWT 가 없어
+      #   태스크 파드가 기동 즉시 죽는다(코어 4종과 같은 조합).
+      envFrom:
+        - configMapRef:
+            name: data-layer-env
+        - secretRef:
+            name: data-layer-secrets
+        - secretRef:
+            name: airflow-env
+      volumeMounts:
+        - name: git-repo
+          mountPath: /git
+      # 태스크마다 이만큼을 예약한다 — PARALLELISM 과 곱해진 값이 클러스터에 실제로 필요한 양이다.
+      resources:
+        requests:
+          cpu: "100m"
+          memory: "384Mi"
+
+  volumes:
+    - name: git-repo
+      emptyDir: {}

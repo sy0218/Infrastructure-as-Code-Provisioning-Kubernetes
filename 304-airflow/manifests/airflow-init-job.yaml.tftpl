@@ -1,0 +1,97 @@
+# ===============================================
+# [Airflow 초기화 Job]
+#   → 이름에 이미지 태그가 들어간다 — Job spec 은 불변이라 같은 이름으로 다시 apply 하면
+#     "field is immutable" 로 막힌다.
+#   → 태그가 바뀌면 옛 Job 을 지우고 새로 만들어 새 버전의 마이그레이션이 한 번 돈다
+#     (같은 태그면 아무 일도 일어나지 않는다).
+# ===============================================
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ${job_name}
+  namespace: ${namespace}
+  labels:
+    app: airflow-init
+    app.kubernetes.io/name: airflow-init
+    app.kubernetes.io/component: init
+    app.kubernetes.io/part-of: data-layer
+spec:
+  # PG 기동을 기다리다 실패해도 다시 붙어 본다(파드 내부 대기 루프 5분 × 최대 7회)
+  backoffLimit: 6
+  template:
+    metadata:
+      labels:
+        app: airflow-init
+        app.kubernetes.io/name: airflow-init
+        app.kubernetes.io/component: init
+        app.kubernetes.io/part-of: data-layer
+    spec:
+      # Service env 자동 주입 차단 — 근거는 CLAUDE.md '쿠버네티스 규약'
+      enableServiceLinks: false
+
+      # OnFailure — 파드를 새로 만들지 않고 컨테이너만 다시 돌린다(파드 잔해가 안 쌓인다)
+      restartPolicy: OnFailure
+      # UID 50000 / 그룹 0 — 이미지가 그 계정 홈에 커스텀 패키지를 설치해 둬서
+      # 다른 UID 로 뜨면 import 부터 깨진다.
+      securityContext:
+        runAsUser: ${run_as_user}
+        runAsGroup: ${fs_group}
+        fsGroup: ${fs_group}
+      containers:
+        - name: airflow-init
+          image: ${image}
+          imagePullPolicy: IfNotPresent
+          # 다른 워크로드와 달리 entrypoint 를 우회한다 — entrypoint 는 airflow CLI 를 한 번
+          # 호출하는 구조라 '대기 → migrate → users create' 3단계를 넣을 자리가 없다.
+          command:
+            - /bin/bash
+            - -c
+          args:
+            - |
+              set -euo pipefail
+
+              # PG 는 클러스터 밖 로컬 설치라 기동 순서를 Terraform 이 보장하지 못한다.
+              # `airflow db check` 는 SQL_ALCHEMY_CONN 으로 실제 접속을 시도하므로
+              # "포트가 열렸다"가 아니라 "이 계정으로 이 DB 에 붙는다"까지 확인해 준다.
+              tries=0
+              until airflow db check >/dev/null 2>&1; do
+                tries=$((tries + 1))
+                if [ "$${tries}" -ge 60 ]; then
+                  echo "PostgreSQL 이 5분 안에 응답하지 않음 — 컨테이너를 재시작해 다시 시도한다"
+                  exit 1
+                fi
+                echo "  PostgreSQL 미응답(#$${tries}) — 5초 후 재시도"
+                sleep 5
+              done
+
+              # 1단계: 메타DB 스키마 생성/업그레이드 (멱등 — 재실행이 안전하다)
+              echo "Airflow 메타DB 마이그레이션..."
+              airflow db migrate
+
+              # 2단계: 관리자 계정 생성.
+              # 이미 있으면 CLI 가 0 이 아닌 코드로 끝나는데 그건 실패가 아니라 '할 일 없음'이다
+              # → set -e 아래에서 Job 을 죽이지 않도록 여기서만 실패를 삼킨다.
+              echo "관리자 계정 확인/생성: $${AIRFLOW_ADMIN_USERNAME}"
+              airflow users create \
+                --username "$${AIRFLOW_ADMIN_USERNAME}" \
+                --password "$${AIRFLOW_ADMIN_PASSWORD}" \
+                --firstname "$${AIRFLOW_ADMIN_FIRSTNAME}" \
+                --lastname "$${AIRFLOW_ADMIN_LASTNAME}" \
+                --role Admin \
+                --email "$${AIRFLOW_ADMIN_EMAIL}" \
+                || echo "  이미 존재하는 계정 — 건너뛴다"
+
+              echo "Airflow initialization completed."
+          envFrom:
+            # 공용 값(토픽/DSN/엔드포인트) — DAG 코드가 읽는다
+            - configMapRef:
+                name: data-layer-env
+            - secretRef:
+                name: data-layer-secrets
+            # Airflow 자체 설정. 맨 뒤라 키가 겹치면 이쪽이 이긴다.
+            - secretRef:
+                name: airflow-env
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "512Mi"

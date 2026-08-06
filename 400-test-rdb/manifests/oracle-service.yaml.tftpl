@@ -1,0 +1,25 @@
+# ===============================================
+# [cdc-oracle Service]
+#   → 이 이름이 계약이다 — 커넥터 JSON 의 database.hostname 과 Airflow 커넥션 cdc_oracle
+#     이 이 FQDN 을 가리킨다. docker 시절의 192.168.56.201:11521 을 대체한다.
+#   → ClusterIP 뿐이다. 사람이 붙을 때는 옛 포트를 그대로 재현한다:
+#       kubectl -n ${namespace} port-forward svc/cdc-oracle 11521:${port}
+# ===============================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: cdc-oracle
+  namespace: ${namespace}
+  labels:
+    app: cdc-oracle
+    app.kubernetes.io/name: cdc-oracle
+    app.kubernetes.io/component: test-rdb
+    app.kubernetes.io/part-of: data-layer
+spec:
+  type: ClusterIP
+  selector:
+    app: cdc-oracle
+  ports:
+    - name: oracle
+      port: ${port}
+      targetPort: oracle

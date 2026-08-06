@@ -1,0 +1,40 @@
+-- ===============================================
+-- [cdc-mysql 초기화 — cdc.cdc_test_qm_batches]
+--
+-- 이미지의 /docker-entrypoint-initdb.d 훅으로 실행된다 → 볼륨이 빈 첫 기동에만 돈다.
+-- 접속은 root, 기본 데이터베이스는 MYSQL_DATABASE(=${database}) 다(entrypoint 가 --database 를 붙인다).
+-- 스키마를 고쳐도 기존 PVC 에는 반영되지 않는다(PVC 를 지워야 다시 돈다).
+--
+-- 커넥터 계약 — data_layer_debezium/connect_json/cdc-mysql-qm-batches.json
+--   database.include.list   ${database}
+--   table.include.list      ${database}.cdc_test_qm_batches
+--   database.user           ${user}
+-- ===============================================
+
+-- 컬럼 목록은 배치 경로(CSV, /jsy/data_test/qm_batches/*/batches.csv)의 헤더와 1:1 이다.
+-- created_at/updated_at 만 CSV 에 없고 DB 가 채운다 — 그래서 커넥터의 drop SMT 가 둘을 뺀다.
+-- ⚠ updated_at 의 ON UPDATE 절이 핵심이다. 값이 전혀 바뀌지 않은 UPDATE 는 MySQL 이 행을
+--   건드리지 않아 binlog 레코드 자체가 생기지 않는다 — 이 절이 있어야 재적재가 CDC 이벤트가 된다.
+CREATE TABLE cdc_test_qm_batches (
+    batch_id    varchar(64)  NOT NULL,
+    unit_id     varchar(64)  NOT NULL,
+    batch_start datetime(3)  NOT NULL,
+    batch_end   datetime(3)  DEFAULT NULL,
+    `shift`     varchar(16)  NOT NULL,
+    created_at  timestamp(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at  timestamp(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (batch_id),
+    KEY idx_batches_time (batch_start, batch_end),
+    KEY idx_batches_shift (`shift`)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_0900_ai_ci;
+
+-- 이미지가 만들어 주는 것은 `GRANT ALL ON ${database}.* TO ${user}` 하나뿐이다.
+-- Debezium 은 그 위에 전역 권한 넷이 더 필요하다:
+--   REPLICATION SLAVE   binlog 스트림을 받는 권한(없으면 접속 자체가 거부된다)
+--   REPLICATION CLIENT  SHOW MASTER STATUS 로 시작 위치를 읽는 권한
+--   RELOAD / LOCK TABLES  스냅샷이 글로벌 읽기 락을 잡는 권한
+--     (snapshot.mode=no_data 라 지금은 안 쓰지만, initial 로 바꾸는 순간 필요해진다)
+--   SELECT / SHOW DATABASES  캡처 대상 메타데이터 조회
+GRANT SELECT, RELOAD, SHOW DATABASES, LOCK TABLES, REPLICATION SLAVE, REPLICATION CLIENT
+    ON *.* TO '${user}'@'%';
+FLUSH PRIVILEGES;

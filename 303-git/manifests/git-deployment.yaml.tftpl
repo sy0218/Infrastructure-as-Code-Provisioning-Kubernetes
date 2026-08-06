@@ -1,0 +1,97 @@
+# ===============================================
+# [data-layer-git — git daemon Deployment]
+#   → git-sync(304-airflow)가 clone 할 원본이자, 로컬 PC 가 push 할 대상.
+#   → 폐쇄망 랩이라 웹 UI·계정·PR 이 필요 없어 Gitea 대신 daemon 하나만 띄운다(약 30Mi).
+#   → 저장소 실체는 PVC 하나뿐이라 파드는 언제 죽어도 되고, 노드가 죽으면 볼륨이 따라간다.
+# ===============================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: data-layer-git
+  namespace: ${namespace}
+  labels:
+    app: data-layer-git
+    app.kubernetes.io/name: data-layer-git
+    app.kubernetes.io/part-of: data-layer
+spec:
+  replicas: 1
+  # ⚠ Recreate 고정: RWO 볼륨이라 RollingUpdate 로 새 파드를 먼저 띄우면 그 파드가 다른
+  #   노드로 가는 순간 Multi-Attach 로 무한 대기한다(grafana 와 같은 이유).
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: data-layer-git
+  template:
+    metadata:
+      labels:
+        app: data-layer-git
+        app.kubernetes.io/name: data-layer-git
+        app.kubernetes.io/part-of: data-layer
+    spec:
+      # Service env 자동 주입 차단 — 근거는 CLAUDE.md '쿠버네티스 규약'
+      enableServiceLinks: false
+
+      # bare 저장소는 원격에서 만들 수 없다(git 프로토콜에 '저장소 생성'이 없다) →
+      # 볼륨이 비어 있을 때만 만들어 주는 멱등 초기화. 이미 있으면 아무 일도 하지 않는다.
+      initContainers:
+        - name: init-repo
+          image: ${image}
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -eu
+              if [ ! -d /srv/git/${repo_name}.git ]; then
+                git init --bare /srv/git/${repo_name}.git
+                echo "created /srv/git/${repo_name}.git"
+              else
+                echo "already exists — skip"
+              fi
+          volumeMounts:
+            - name: repos
+              mountPath: /srv/git
+
+      containers:
+        - name: git-daemon
+          image: ${image}
+          imagePullPolicy: IfNotPresent
+          # 기동 인자를 이미지에 굽지 않는 이유: 저장소 경로·push 허용 여부는 환경 정책이라
+          # 매니페스트가 소유한다(prometheus 가 args 로 설정을 받는 것과 같은 방식).
+          command: ["git"]
+          args:
+            - daemon
+            - --reuseaddr
+            - --base-path=/srv/git
+            - --export-all
+            # ⚠ 이 한 줄이 push 를 연다. git daemon 에는 인증이 없으므로 이 포트에 닿는
+            #   누구나 쓸 수 있다 — 사설 폐쇄망이라는 전제 위에서만 성립한다.
+            - --enable=receive-pack
+            - --verbose
+          ports:
+            - name: git
+              containerPort: ${daemon_port}
+          # HTTP 가 아니라 git 프로토콜이라 httpGet 을 쓸 수 없다 → 포트 연결로 확인한다.
+          readinessProbe:
+            tcpSocket:
+              port: git
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            tcpSocket:
+              port: git
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+          volumeMounts:
+            - name: repos
+              mountPath: /srv/git
+
+      volumes:
+        - name: repos
+          persistentVolumeClaim:
+            claimName: git-repos

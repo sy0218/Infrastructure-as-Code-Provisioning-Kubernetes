@@ -1,0 +1,10 @@
+# ===============================================
+# [시크릿 주입 템플릿]
+#  cp secrets.auto.tfvars.example secrets.auto.tfvars
+# 여기 값이 Secret test-rdb-secrets 로 들어가 소스 RDB 4종의 계정 비밀번호가 된다.
+# 아래는 랩 기본값 — 운영이면 교체할 것.
+# ===============================================
+
+# ⚠ data_pipeline/.env 의 CDC_SOURCE_DB_PASSWORD 와 반드시 같은 값.
+#   커넥터 JSON 4종의 ${CDC_SOURCE_DB_PASSWORD} 자리에 사람이 채워 넣는 값이 이것이다.
+cdc_source_db_password = "Dsai12345"
