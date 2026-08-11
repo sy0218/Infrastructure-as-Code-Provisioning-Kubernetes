@@ -2,45 +2,53 @@
 # [클러스터 접속]
 # ===============================================
 
+# → Terraform이 Kubernetes 클러스터에 접속할 때 사용하는 설정 파일이다.
 variable "kubeconfig_path" {
-  description = "kubeconfig 파일 경로"
+  description = "Kubernetes 접속에 사용할 kubeconfig 경로"
   type        = string
   default     = "~/.kube/config"
 }
 
 # ===============================================
 # [차트 버전]
-#   → 정확 고정 값이라 default 를 여기 둔다 — 업그레이드는 이 숫자를 고치는 커밋으로만.
 # ===============================================
 
+# → Helm으로 설치할 ingress-nginx 차트 버전이다.
+# → 버전을 고정해 실행할 때마다 같은 버전을 사용한다.
 variable "ingress_nginx_chart_version" {
-  description = "ingress-nginx 차트 버전"
+  description = "ingress-nginx Helm 차트 버전"
   type        = string
   default     = "4.15.1"
 }
 
 # ===============================================
 # [진입점 VIP]
-#   → 이 저장소에서 브라우저용 주소의 유일한 정의 지점이다. 노드 IP 가 아니라 이 주소
-#     하나가 /etc/hosts 에 들어가고, MetalLB 가 살아 있는 노드로 옮겨 준다.
-#   ⚠ 노드망(192.168.56.0/24) 안이면서 노드·DHCP 와 겹치지 않아야 한다 — L2 모드는
-#     같은 브로드캐스트 도메인에서 ARP 로 광고하는 방식이라 다른 대역은 응답하지 못한다.
+#
+# → 브라우저가 접속하는 대표 IP다.
+# → 사용자는 노드 IP가 아닌 이 VIP로 접속한다.
+# → MetalLB가 VIP를 현재 사용 가능한 노드에 연결한다.
+#
+# → MetalLB L2 모드는 ARP로 VIP를 네트워크에 광고한다.
+# → 따라서 노드망(192.168.56.0/24)에서 사용해야 한다.
+# → 노드나 DHCP가 이미 사용하는 IP와 겹치면 안 된다.
 # ===============================================
 
-# 네트워크 환경마다 달라지는 값이라 default 없음 → tfvars 강제
+# 네트워크 환경마다 달라지므로 기본값 없이 tfvars에서 지정한다.
 variable "ingress_vip" {
-  description = "ingress-nginx LoadBalancer VIP — Ansible host.yml 의 ingress_vip 와 글자 그대로 같아야 한다"
+  description = "Ingress VIP → Ansible host.yml의 ingress_vip와 동일한 값"
   type        = string
 }
 
 # ===============================================
 # [ingress-nginx 워크로드]
 # ===============================================
+# → 외부 요청을 받아 Kubernetes 내부 서비스로 전달한다.
+# → 1개만 실행하면 해당 파드 장애 시 외부 접속이 끊길 수 있다.
+# → 기본 2개로 실행해 서로 다른 노드에 분산한다.
+# → 노드 수보다 많이 설정하면 초과 파드는 Pending 상태가 된다.
 
-# 1 이면 그 파드가 곧 전 서비스의 SPOF 다(NodePort 시절보다 나빠진다) → 최소 2.
-# 3 이상은 노드 수만큼만 의미가 있다 — 아래 antiAffinity 가 노드당 1개로 제한한다.
 variable "ingress_replicas" {
-  description = "ingress-nginx 컨트롤러 복제 수 (노드 분산 — 노드 수를 넘기면 초과분이 Pending 에 걸린다)"
+  description = "Ingress 컨트롤러 복제 수 → 노드에 분산 배치"
   type        = number
   default     = 2
 }
@@ -48,9 +56,11 @@ variable "ingress_replicas" {
 # ===============================================
 # [다른 스택이 소유한 값의 미러]
 # ===============================================
+# → MetalLB 자체 설정은 101-metallb에서 관리한다.
+# → 여기서는 MetalLB가 사용하는 네임스페이스만 참조한다.
 
 variable "metallb_namespace" {
-  description = "MetalLB 네임스페이스 (101-metallb 소유 — CR 배치 위치 미러 선언)"
+  description = "MetalLB 네임스페이스"
   type        = string
   default     = "metallb-system"
 }

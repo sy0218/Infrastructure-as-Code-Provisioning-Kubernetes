@@ -1,7 +1,13 @@
 # ===============================================
-# [Longhorn — 이름으로 지목해 쓰는 복제 스토리지]
-#   → 자체 복제가 없는 단일 인스턴스(Harbor·Prometheus·Grafana)만 storageClassName: longhorn 을 명시한다.
-#   → 노드 선행작업(open-iscsi/multipath/데이터 경로)은 Ansible longhorn_prereq 롤 담당 — Terraform 밖 수동 단계다.
+# [Longhorn]
+# ===============================================
+# - Kubernetes에서 사용할 분산 스토리지 Longhorn을 설치합니다.
+# - Longhorn은 여러 노드에 데이터를 복제
+#   → 특정 노드에 장애 발생해도 데이터 유지 가능
+#
+# [주의]
+# - Longhorn 설치 전에 필요한 노드 설정은
+# → Ansible의 longhorn_prereq Role에서 미리 준비합니다.
 # ===============================================
 resource "helm_release" "longhorn" {
   name             = "longhorn"
@@ -15,10 +21,8 @@ resource "helm_release" "longhorn" {
   values = [yamlencode({
     persistence = {
       # 기본 스토리지 클래스는 local-path 가 유지한다
-      defaultClass = false
-
-      # ap 는 control-plane taint 라 스토리지 노드가 s1/s2 둘뿐 → 3 이면 영원히 degraded
-      defaultClassReplicaCount = 2
+      defaultClass             = false
+      defaultClassReplicaCount = var.longhorn_replica_count
     }
     defaultSettings = {
       # 노드의 실제 디스크 마운트 경로와 일치해야 한다 (tfvars 주입)

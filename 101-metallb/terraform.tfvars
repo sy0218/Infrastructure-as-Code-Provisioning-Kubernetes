@@ -1,6 +1,13 @@
 # ===============================================
 # [환경별 설정]
-#   → 이 스택은 환경마다 달라지는 값이 없다(차트 설치만 한다) — variables.tf 기본값으로 전부 동작한다.
-#   → VIP 대역은 여기가 아니라 102-ingress 가 소유한다. 주소를 정하는 일과
-#     MetalLB 를 켜는 일은 서로 다른 결정이라 스택을 나눴다(versions.tf 배너 참조).
+#   → 이 스택이 받는 값 전체를 여기 모아 둔다
 # ===============================================
+
+# Kubernetes 클러스터에 접속할 때 사용할 kubeconfig 파일 경로
+kubeconfig_path = "~/.kube/config"
+
+# Helm으로 설치할 metallb_chart 의 버전
+metallb_chart_version = "0.16.1"
+
+# MetalLB 네임스페이스
+namespace = "metallb-system"

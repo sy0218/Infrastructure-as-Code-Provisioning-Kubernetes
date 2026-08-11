@@ -1,6 +1,8 @@
 # ===============================================
-# [클러스터 접속]
-#   → 이 스택이 Helm 으로 클러스터에 붙을 때 쓰는 유일한 인증 수단.
+# [Kubernetes 접속]
+#
+# → Terraform이 Helm으로 Kubernetes에 접속할 때 사용하는 kubeconfig
+#
 # ===============================================
 
 variable "kubeconfig_path" {
@@ -9,15 +11,19 @@ variable "kubeconfig_path" {
   default     = "~/.kube/config"
 }
 
+
 # ===============================================
-# [Harbor 접속 / 차트]
-#   → host 는 externalURL · harbor 프로바이더 URL · Ingress 의 host · 전 스택
-#     harbor_registry · 노드 containerd certs.d 디렉토리명의 단일 출처다.
-#   → 이 주소가 실제 접속 주소와 어긋나면 docker login / push 가 깨진다.
+# [Harbor 접속 / 버전]
+#
+# → Harbor의 접속 주소와 Helm Chart 버전을 설정한다.
+#
+# → harbor_host는 Harbor를 접속할 때 사용하는 주소이며,
+#   Ingress / externalURL / containerd 설정에서도 동일하게 사용한다.
+#
 # ===============================================
 
 variable "harbor_chart_version" {
-  description = "goharbor/harbor 차트 버전 (1.18.x = Harbor v2.14)"
+  description = "Harbor Helm Chart 버전"
   type        = string
   default     = "1.18.4"
 }
@@ -28,36 +34,44 @@ variable "harbor_host" {
   default     = "data-layer-harbor"
 }
 
-variable "harbor_port" {
-  description = "Harbor ClusterIP 포트 — Ingress 백엔드가 가리키는 포트 (차트 내부 nginx 8080 으로 전달)"
-  type        = number
-  default     = 80
-}
+# ===============================================
+# [Ingress]
+#
+# → Docker 이미지 Push/Pull이 오래 걸릴 수 있어
+#   Ingress가 최대 600초까지 기다리도록 설정한다.
+#
+# ===============================================
 
-# 이미지 레이어 하나가 느린 랩 네트워크에서 기본값 60초를 쉽게 넘긴다.
-# 환경마다 달라질 값이 아니라 default 를 준다.
 variable "harbor_proxy_timeout" {
-  description = "Ingress 레이어 전송 대기 상한(초) — 넘으면 docker push 가 중간에 끊긴다"
+  description = "Ingress 요청 대기 시간(초)"
   type        = string
   default     = "600"
 }
 
-# ⚠ 시크릿인데 default 평문 값이 이미 apply 된 상태와 묶여 있다 —
-#   secrets.auto.tfvars 이관은 Harbor 비밀번호 교체와 같은 커밋에서만 한다.
+
+# ===============================================
+# [Harbor 관리자 비밀번호]
+#
+# → secrets.auto.tfvars에서 값을 주입한다.
+# → Terraform 출력에서는 비밀번호를 숨긴다.
+#
+# ===============================================
+
 variable "harbor_admin_password" {
-  description = "Harbor admin 비밀번호 (lab 기본값 — 운영이면 반드시 교체)"
+  description = "Harbor admin 비밀번호"
   type        = string
-  default     = "Harbor12345"
   sensitive   = true
 }
 
+
 # ===============================================
-# [영구 저장소]
-#   → registry·database·redis·jobservice 4개를 longhorn 에 둔다 — 이유는 harbor.tf 참조.
-#   ⚠ trivy 는 여기 안 걸려 local-path 로 떨어진다(취약점 DB 캐시 — 지워져도 재생성).
+# [Harbor 저장소]
+#
+# → Registry / Database / Redis는 Longhorn을 사용한다.
+# → Jobservice / Trivy는 local-path를 사용한다.
+#
 # ===============================================
 
-# ⚠ longhorn replica 2 라 실제 디스크는 이 값의 2배를 먹는다(30Gi → 60Gi)
 variable "harbor_registry_storage_size" {
   description = "Registry PVC 크기"
   type        = string
@@ -65,13 +79,13 @@ variable "harbor_registry_storage_size" {
 }
 
 variable "harbor_storage_class" {
-  description = "Harbor PVC StorageClass — 아래 4개에만 적용된다(trivy 는 차트 기본값을 쓴다)"
+  description = "Registry / Database / Redis에 사용할 StorageClass"
   type        = string
   default     = "longhorn"
 }
 
 variable "harbor_component_storage_size" {
-  description = "Harbor 내부 컴포넌트 PVC 크기"
+  description = "Database / Redis / Jobservice PVC 크기"
   type        = string
   default     = "2Gi"
 }

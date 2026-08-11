@@ -1,6 +1,7 @@
 # ===============================================
 # [Helm Provider]
-#   → 클러스터 접속은 kubeconfig 하나로 일원화한다(kubeadm control-plane 의 admin.conf 복사본).
+#   - 테라폼이 Helm을 통해 K8S에 접근할 때 사용할 설정입니다.
+#   - kubernetes 접속 정보는 kubeconfig 파일 하나로 관리합니다.
 # ===============================================
 provider "helm" {
   kubernetes = {

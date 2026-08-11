@@ -1,10 +1,24 @@
 # ===============================================
-# [MetalLB — 온프렘 LoadBalancer 구현체]
-#   → 클라우드가 아닌 클러스터에는 type: LoadBalancer 에 IP 를 붙여 줄 주체가 없어
-#     Service 가 영원히 <pending> 에 머문다. 그 자리를 채우는 컴포넌트다.
-#   → 이 스택은 '기능을 켜는' 것까지만 한다. 실제 VIP 대역(IPAddressPool)과 광고 방식
-#     (L2Advertisement)은 102-ingress 소유 — CRD 가 생기기 전에는 그 CR 을 plan 조차 할 수 없다.
+# [MetalLB — 온프렘 Kubernetes의 LoadBalancer 구현체]
+#
+# → 클라우드 환경에서는 AWS/GCP 등이
+#   type: LoadBalancer Service에 외부 IP를 자동으로 할당해 준다.
+#
+# → 온프렘 Kubernetes에는 이런 기능을 해주는 클라우드가 없기 때문에
+#   LoadBalancer Service를 만들어도 외부 IP가 자동으로 할당되지 않는다.
+#
+# → MetalLB가 이 역할을 대신한다.
+#
+# 이 스택의 역할
+# → MetalLB의 기본 기능만 설치한다.
+# → 실제로 사용할 VIP 대역(IPAddressPool)과
+#   VIP를 네트워크에 알리는 방법(L2Advertisement)은
+#   102-ingress에서 설정한다.
+#
+# → MetalLB의 CRD가 먼저 설치되어야
+#   IPAddressPool / L2Advertisement 리소스를 생성할 수 있다.
 # ===============================================
+
 resource "helm_release" "metallb" {
   name             = "metallb"
   repository       = "https://metallb.github.io/metallb"
@@ -15,24 +29,59 @@ resource "helm_release" "metallb" {
   timeout          = 600
 
   values = [yamlencode({
-    # ⚠ 차트 기본값이 true 다 — 끄지 않으면 BGP 백엔드(frr-k8s)가 서브차트째 딸려 와
-    #   노드마다 FRR 컨테이너가 뜬다. 이 랩은 L2Advertisement 만 쓰므로 순수 낭비다
-    #   (노드당 가용 메모리가 2873Mi 뿐이라 무시할 수 있는 크기가 아니다).
-    #   BGP 를 쓰려면 이 값을 켜는 것이 아니라 라우터 쪽 설계부터 다시 해야 한다.
+
+    # ===========================================
+    # [BGP 비활성화]
+    #
+    # → MetalLB는 L2 방식과 BGP 방식으로
+    #   외부 IP(VIP)를 광고할 수 있다.
+    #
+    # → 이 환경에서는 L2 방식만 사용하므로
+    #   BGP 기능은 끈다.
+    #
+    # → 기본값을 그대로 두면 FRR 기반 BGP 구성요소가
+    #   함께 배포될 수 있으므로 불필요한 리소스를 사용하게 된다.
+    # ===========================================
     frrk8s = {
       enabled = false
     }
 
-    # speaker 는 노드마다 뜨는 DaemonSet 이고 controller 는 1개다. 둘 다 실사용이
-    # 20Mi 를 넘지 않는 경량 프로세스라 요청을 명시해 스케줄러가 과대평가하지 않게 한다.
+    # ===========================================
+    # [Controller 리소스]
+    #
+    # → Controller는 MetalLB 설정을 관리하는 Pod다.
+    # → 1개만 실행된다.
+    #
+    # → 매우 가벼운 컴포넌트이므로
+    #   필요한 최소 CPU/메모리만 예약한다.
+    # ===========================================
     controller = {
       resources = {
-        requests = { cpu = "10m", memory = "32Mi" }
+        requests = {
+          cpu    = "10m"
+          memory = "32Mi"
+        }
       }
     }
+
+    # ===========================================
+    # [Speaker 리소스]
+    #
+    # → Speaker는 각 Kubernetes 노드마다 1개씩 실행된다.
+    #   (DaemonSet)
+    #
+    # → L2 방식에서는 Speaker가 VIP를
+    #   네트워크에 광고하는 역할을 한다.
+    #
+    # → 가벼운 프로세스이므로
+    #   필요한 최소 CPU/메모리만 예약한다.
+    # ===========================================
     speaker = {
       resources = {
-        requests = { cpu = "10m", memory = "32Mi" }
+        requests = {
+          cpu    = "10m"
+          memory = "32Mi"
+        }
       }
     }
   })]

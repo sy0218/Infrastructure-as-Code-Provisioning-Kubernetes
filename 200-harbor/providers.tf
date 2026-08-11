@@ -19,11 +19,3 @@ provider "harbor" {
   username = "admin"
   password = var.harbor_admin_password
 }
-
-# ===============================================
-# [Kubernetes Provider]
-#   → Ingress 를 차트가 아니라 이 스택의 매니페스트로 만들기 위해 필요하다.
-# ===============================================
-provider "kubernetes" {
-  config_path = pathexpand(var.kubeconfig_path)
-}

@@ -1,0 +1,105 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "data-layer-base values",
+  "description": "원본 300-data-layer-base 의 'default 없는 변수 = tfvars 강제' 규칙의 Helm 판 — 필수 키 누락·오타·형식 오류를 렌더(lint/template/install) 시점에 잡는다. global 은 루트가 다른 차트용 키(harborRegistry 등)까지 통짜로 주입하므로 additionalProperties 를 막지 않는다.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "global",
+    "postgresPort",
+    "schemaRegistryPort",
+    "kafkaConnectPort",
+    "kafkaUiHost",
+    "airflowHost",
+    "grafanaHost",
+    "collectorDbName",
+    "collectorDbSchema",
+    "icebergCatalogDbName",
+    "graphLabelPrefix",
+    "secrets"
+  ],
+  "properties": {
+    "global": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["namespace", "kafkaBootstrap", "minioEndpoint", "postgresHost", "neo4jBoltUri"],
+      "properties": {
+        "namespace": {
+          "type": "string",
+          "description": "RFC 1123 라벨 — 소문자/숫자/하이픈만",
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "maxLength": 63
+        },
+        "kafkaBootstrap": {
+          "type": "string",
+          "description": "쉼표 구분 host:port 목록 — Ansible host.yml kafka 그룹과 일치",
+          "pattern": "^[^,\\s]+:[0-9]+(,[^,\\s]+:[0-9]+)*$"
+        },
+        "minioEndpoint": {
+          "type": "string",
+          "pattern": "^https?://.+"
+        },
+        "postgresHost": {
+          "type": "string",
+          "minLength": 1
+        },
+        "neo4jBoltUri": {
+          "type": "string",
+          "pattern": "^bolt(\\+s(sc)?)?://.+"
+        }
+      }
+    },
+    "postgresPort": { "type": "integer", "minimum": 1, "maximum": 65535 },
+    "schemaRegistryPort": { "type": "integer", "minimum": 1, "maximum": 65535 },
+    "kafkaConnectPort": { "type": "integer", "minimum": 1, "maximum": 65535 },
+    "kafkaUiHost": {
+      "type": "string",
+      "description": "호스트명 라벨 — 밑줄 금지(원본 '호스트명에 밑줄을 쓰지 않는다' 규칙)",
+      "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+    },
+    "airflowHost": {
+      "type": "string",
+      "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+    },
+    "grafanaHost": {
+      "type": "string",
+      "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+    },
+    "collectorDbName": { "type": "string", "minLength": 1 },
+    "collectorDbSchema": { "type": "string", "minLength": 1 },
+    "icebergCatalogDbName": { "type": "string", "minLength": 1 },
+    "graphLabelPrefix": {
+      "type": "string",
+      "description": "빈 문자열 허용 — 실서비스는 빈 값, 검증 단계는 Test"
+    },
+    "secrets": {
+      "type": "object",
+      "description": "Secret data-layer-secrets 의 원천 — 키 오타가 조용히 기본값으로 남지 않도록 추가 키를 막는다",
+      "additionalProperties": false,
+      "required": [
+        "minioRootUser",
+        "minioRootPassword",
+        "postgresUser",
+        "postgresPassword",
+        "collectorCryptoKey",
+        "dataLayerApiKey",
+        "platformNeo4jUser",
+        "platformNeo4jPassword",
+        "grafanaAdminUser",
+        "grafanaAdminPassword"
+      ],
+      "properties": {
+        "minioRootUser": { "type": "string", "minLength": 1 },
+        "minioRootPassword": { "type": "string", "minLength": 1 },
+        "postgresUser": { "type": "string", "minLength": 1 },
+        "postgresPassword": { "type": "string", "minLength": 1 },
+        "collectorCryptoKey": { "type": "string", "minLength": 1 },
+        "dataLayerApiKey": { "type": "string", "minLength": 1 },
+        "platformNeo4jUser": { "type": "string", "minLength": 1 },
+        "platformNeo4jPassword": { "type": "string", "minLength": 1 },
+        "grafanaAdminUser": { "type": "string", "minLength": 1 },
+        "grafanaAdminPassword": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

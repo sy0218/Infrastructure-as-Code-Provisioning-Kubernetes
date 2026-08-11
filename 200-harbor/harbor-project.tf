@@ -1,17 +1,20 @@
 # ===============================================
 # [Harbor 프로젝트]
-#   → data-layer 이미지 전체가 들어갈 프로젝트 — 주소 규약은 <harbor>/data-layer/<name>:<tag>.
-#   → public = true 는 폐쇄망 랩이라 image pull 인증을 두지 않기 위함이다.
+# → Harbor 안에 "data-layer"라는 저장소 공간을 만든다.
+# → data-layer 관련 Docker 이미지를 여기에 모아둔다.
+# → 이미지 주소는 harbor.example.com/data-layer/이미지명 형태가 된다.
+# → 폐쇄망 환경이라 외부 인증 없이 이미지를 pull할 수 있도록 public으로 설정한다.
+
+# → Harbor를 먼저 설치해야 프로젝트를 만들 수 있다.
+# → 따라서 Harbor Helm 설치가 끝난 뒤 이 프로젝트를 생성한다.
+
 # ===============================================
+
 resource "harbor_project" "data_layer" {
   name   = "data-layer"
   public = true
 
-  # ⚠ 둘 다 필요하다. 파드가 떠 있는 것(helm)만으로는 부족하고, harbor 프로바이더가 쓰는
-  #   주소(http://<harbor_host>)가 실제로 열려 있어야 하는데 그 경로를 여는 것이 Ingress 다.
-  #   Ingress 를 빼면 첫 apply 에서 "dial tcp ...:80: connect: connection refused" 로 죽는다.
-  depends_on = [
-    helm_release.harbor,
-    kubernetes_manifest.harbor_ingress,
-  ]
+  # Harbor Helm 설치가 먼저 끝나야 한다.
+  # 그래야 Terraform이 Harbor에 접속해서 프로젝트를 만들 수 있다.
+  depends_on = [helm_release.harbor]
 }
