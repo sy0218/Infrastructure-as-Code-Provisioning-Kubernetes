@@ -5,7 +5,7 @@
 # ===============================================
 
 # 이미지 출처: <harbor_registry>/data-layer/<name>:<image_tag>
-harbor_registry = "data-layer-harbor"
+harbor_registry = "data-layer-harbor:80" # ⚠ :80 생략 시 docker.io 로 정규화 — build_and_push.sh 헤더 참조
 image_tag       = "v0.1.0"
 
 # 장비가 192.168.56.202 로 보내고 있어 s2 다 — 장비 설정이 바뀌면 이 값도 함께 움직인다.

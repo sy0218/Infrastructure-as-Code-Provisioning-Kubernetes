@@ -6,7 +6,7 @@
 # ===============================================
 
 # 이미지 출처: <harbor_registry>/data-layer/<name>:<image_tag> — 태그는 build_and_push.sh 에 넘긴 값과 같아야 한다
-harbor_registry = "data-layer-harbor"
+harbor_registry = "data-layer-harbor:80" # ⚠ :80 생략 시 docker.io 로 정규화 — build_and_push.sh 헤더 참조
 image_tag       = "v0.1.0"
 
 # ⚠ 임시값(2026-08-04) — 원래 기본값은 3 이다. 304-airflow 를 올릴 메모리를 확보하려고

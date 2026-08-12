@@ -5,7 +5,7 @@
 # ===============================================
 
 # 이미지 출처: <harbor_registry>/data-layer/<name>:<image_tag>
-harbor_registry = "data-layer-harbor"
+harbor_registry = "data-layer-harbor:80" # ⚠ :80 생략 시 docker.io 로 정규화 — build_and_push.sh 헤더 참조
 image_tag       = "v0.1.0"
 
 # 파드 /etc/hosts(hostAliases)용 — 클라이언트 PC hosts 파일에 넣는 VIP 와 같은 값이다.
