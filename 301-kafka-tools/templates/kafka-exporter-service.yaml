@@ -1,13 +1,14 @@
 # ===============================================
-# [Kafka Exporter — Service]
-#   → 302-monitoring 의 Prometheus 가 이 Service 를 통해 메트릭을 긁어간다.
-#   → 외부 공개가 필요 없어 ClusterIP.
+# [Kafka Exporter → Service]
+#
+# 302-monitoring 의 Prometheus 가 이 Service 를 통해 메트릭을 긁어간다.
+# 외부 공개가 필요 없어 ClusterIP.
 # ===============================================
 apiVersion: v1
 kind: Service
 metadata:
   name: kafka-exporter
-  namespace: ${namespace}
+  namespace: {{ .Values.global.namespace }}
   labels:
     app: kafka-exporter
     app.kubernetes.io/name: kafka-exporter
@@ -20,6 +21,6 @@ spec:
     app: kafka-exporter
   ports:
     - name: metrics
-      port: ${exporter_port}
+      port: {{ .Values.kafkaExporterPort }}
       # 숫자가 아니라 이름으로 묶어 containerPort 가 바뀌어도 따라가게 한다
       targetPort: metrics

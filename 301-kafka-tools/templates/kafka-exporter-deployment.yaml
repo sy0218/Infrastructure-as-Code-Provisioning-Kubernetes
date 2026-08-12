@@ -1,13 +1,20 @@
 # ===============================================
-# [Kafka Exporter — Deployment]
-#   → 토픽·오프셋·컨슈머 Lag 을 Prometheus 형식으로 노출한다.
-#   → 브로커는 클러스터 밖(ADR 0)이라 공용 ConfigMap 의 KAFKA_BOOTSTRAP 으로 접속한다.
+# [Kafka Exporter → Deployment]
+#
+# 토픽/오프셋/컨슈머 Lag 을 Prometheus 형식으로 노출한다. 브로커는 클러스터
+# 밖(ADR 0)이라 공용 ConfigMap 의 KAFKA_BOOTSTRAP 으로 접속한다.
+# 브로커 JVM 메트릭은 브로커 안 javaagent 담당이라 여기서 다루지 않는다.
 # ===============================================
+
+# KAFKA_BOOTSTRAP 이 바뀌면 checksum 이 바뀌어 롤아웃된다.
+# 계산 원본은 values 의 복사본(global.kafkaBootstrap) → 300 과 같은 커밋에서 갱신된다.
+{{- $configHash := sha256sum .Values.global.kafkaBootstrap }}
+
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: kafka-exporter
-  namespace: ${namespace}
+  namespace: {{ .Values.global.namespace }}
   labels:
     app: kafka-exporter
     app.kubernetes.io/name: kafka-exporter
@@ -25,14 +32,14 @@ spec:
         app.kubernetes.io/part-of: data-layer
       annotations:
         # KAFKA_BOOTSTRAP 이 바뀌면 해시가 바뀌어 롤아웃된다 (envFrom 은 재기동 필요)
-        checksum/kafka-bootstrap: "${config_hash}"
+        checksum/kafka-bootstrap: "{{ $configHash }}"
     spec:
       # Service env 자동 주입 차단 — 근거는 CLAUDE.md '쿠버네티스 규약'
       enableServiceLinks: false
 
       containers:
         - name: kafka-exporter
-          image: ${image}
+          image: {{ .Values.global.harborRegistry }}/data-layer/kafka-exporter:{{ .Values.global.imageTag }}
           imagePullPolicy: IfNotPresent
           # kafka_exporter 는 브로커마다 --kafka.server 를 따로 받는다 →
           # 콤마로 이어진 KAFKA_BOOTSTRAP 을 셸에서 쪼개 플래그 목록으로 편다.
@@ -42,11 +49,11 @@ spec:
           args:
             - |
               exec /bin/kafka_exporter \
-                $(echo "$${KAFKA_BOOTSTRAP}" | tr ',' '\n' | sed 's/^/--kafka.server=/' | tr '\n' ' ') \
-                --web.listen-address=:${exporter_port}
+                $(echo "${KAFKA_BOOTSTRAP}" | tr ',' '\n' | sed 's/^/--kafka.server=/' | tr '\n' ' ') \
+                --web.listen-address=:{{ .Values.kafkaExporterPort }}
           ports:
             - name: metrics
-              containerPort: ${exporter_port}
+              containerPort: {{ .Values.kafkaExporterPort }}
           envFrom:
             - configMapRef:
                 name: data-layer-env

@@ -1,13 +1,14 @@
 # ===============================================
-# [Kafka UI — Service]
-#   → 외부 노출은 Ingress 가 맡는다(kafka-ui-ingress.yaml.tftpl) → 여기는 ClusterIP 로 충분하다.
-#   → 인그레스 컨트롤러도 클러스터 안에서 이 이름:포트로 부르므로 둘 다 계약이다.
+# [Kafka UI → Service]
+#
+# 외부 노출은 Ingress 가 맡는다(kafka-ui-ingress.yaml) → 여기는 ClusterIP 로 충분하다.
+# 인그레스 컨트롤러도 클러스터 안에서 이 이름:포트로 부르므로 둘 다 계약이다.
 # ===============================================
 apiVersion: v1
 kind: Service
 metadata:
   name: kafka-ui
-  namespace: ${namespace}
+  namespace: {{ .Values.global.namespace }}
   labels:
     app: kafka-ui
     app.kubernetes.io/name: kafka-ui
@@ -19,5 +20,5 @@ spec:
     app: kafka-ui
   ports:
     - name: http
-      port: ${http_port}
+      port: {{ .Values.kafkaUiPort }}
       targetPort: http

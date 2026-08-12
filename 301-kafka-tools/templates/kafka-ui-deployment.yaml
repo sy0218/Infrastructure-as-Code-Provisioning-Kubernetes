@@ -1,13 +1,25 @@
 # ===============================================
-# [Kafka UI — Deployment]
-#   → 토픽·컨슈머 그룹을 브라우저에서 보는 웹 콘솔.
-#   → 브로커 주소와 Schema Registry 주소를 공용 ConfigMap 에서 받는다.
+# [Kafka UI → Deployment]
+#
+# 토픽/컨슈머 그룹을 브라우저에서 보는 웹 콘솔.
+# 브로커 주소와 Schema Registry 주소를 공용 ConfigMap 에서 받는다.
+#
+# [주의] 공용 ConfigMap 키 3개를 configMapKeyRef 로 직접 읽는다(optional 아님) —
+#    300-data-layer-base 가 먼저 설치돼 있지 않으면 CreateContainerConfigError 로 뜨지 못한다.
 # ===============================================
+
+# 소비하는 공용 값이 바뀌면 checksum 이 바뀌어 롤아웃된다.
+# 계산 원본은 values 의 복사본(global.kafkaBootstrap)과 이 차트 소유의 포트 —
+# SCHEMA_REGISTRY_URL 조립식은 300-data-layer-base 의 ConfigMap 과 같다.
+{{- $svcSuffix := printf "%s.svc.cluster.local" .Values.global.namespace }}
+{{- $schemaRegistryUrl := printf "http://schema-registry.%s:%d" $svcSuffix (int .Values.schemaRegistryPort) }}
+{{- $configHash := printf "%s|%s" .Values.global.kafkaBootstrap $schemaRegistryUrl | sha256sum }}
+
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: kafka-ui
-  namespace: ${namespace}
+  namespace: {{ .Values.global.namespace }}
   labels:
     app: kafka-ui
     app.kubernetes.io/name: kafka-ui
@@ -24,19 +36,20 @@ spec:
         app.kubernetes.io/name: kafka-ui
         app.kubernetes.io/part-of: data-layer
       annotations:
+        # envFrom/configMapKeyRef 값은 파드 재생성 없이 갱신되지 않는다 →
         # 소비하는 공용 값(KAFKA_BOOTSTRAP 등)이 바뀌면 해시가 바뀌어 롤아웃된다
-        checksum/kafka-bootstrap: "${config_hash}"
+        checksum/kafka-bootstrap: "{{ $configHash }}"
     spec:
       # Service env 자동 주입 차단 — 근거는 CLAUDE.md '쿠버네티스 규약'
       enableServiceLinks: false
 
       containers:
         - name: kafka-ui
-          image: ${image}
+          image: {{ .Values.global.harborRegistry }}/data-layer/kafka-ui:{{ .Values.global.imageTag }}
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
-              containerPort: ${http_port}
+              containerPort: {{ .Values.kafkaUiPort }}
           envFrom:
             - configMapRef:
                 name: data-layer-env
@@ -44,7 +57,7 @@ spec:
                 name: data-layer-secrets
           env:
             - name: SERVER_PORT
-              value: "${http_port}"
+              value: {{ .Values.kafkaUiPort | quote }}
             # kafka-ui 는 KAFKA_CLUSTERS_<n>_* 라는 자기 이름 규칙만 읽는다 →
             # 공용 키를 configMapKeyRef 로 옮겨 담는다(값의 출처는 여전히 한 곳).
             - name: KAFKA_CLUSTERS_0_NAME

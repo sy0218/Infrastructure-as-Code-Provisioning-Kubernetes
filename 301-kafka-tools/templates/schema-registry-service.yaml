@@ -1,13 +1,14 @@
 # ===============================================
 # [Schema Registry — Service]
-#   → 이 이름이 공용 ConfigMap 의 SCHEMA_REGISTRY_URL 호스트 부분이 된다.
-#   → 클러스터 안에서만 쓰므로 ClusterIP.
+#
+# 이 이름이 공용 ConfigMap 의 SCHEMA_REGISTRY_URL 호스트 부분이 된다.
+# 클러스터 안에서만 쓰므로 ClusterIP.
 # ===============================================
 apiVersion: v1
 kind: Service
 metadata:
   name: schema-registry
-  namespace: ${namespace}
+  namespace: {{ .Values.global.namespace }}
   labels:
     app: schema-registry
     app.kubernetes.io/name: schema-registry
@@ -19,5 +20,5 @@ spec:
     app: schema-registry
   ports:
     - name: http
-      port: ${http_port}
+      port: {{ .Values.schemaRegistryPort }}
       targetPort: http
