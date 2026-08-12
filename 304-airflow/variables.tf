@@ -26,60 +26,40 @@ variable "image_tag" {
 }
 
 # ===============================================
-# [데이터 스토어 접속 — 클러스터 외부]
-#   → PostgreSQL(메타DB)·MinIO(로그/설정)는 K8s 가 아니라 노드 로컬 설치다(Ansible).
-#     Service DNS 가 없으므로 접속 문자열을 노드 주소 변수로 조립한다.
-#   → 300-data-layer-base 의 같은 이름 변수와 값이 일치해야 한다.
+# [데이터 스토어 접속]
+#   → PostgreSQL(메타DB)은 303-postgres 의 CNPG 클러스터다 — 접속은 Service DNS(-rw).
+#     MinIO(로그/설정)는 여전히 노드 로컬 설치(Ansible)라 노드 주소로 붙는다.
+#   → 300-data-layer-base(values.yaml)의 같은 의미 값과 일치해야 한다.
 # ===============================================
 
-# 호스트·엔드포인트는 환경(노드 주소)마다 달라지는 값이라 default 없음 → tfvars 강제
+# 호스트·엔드포인트는 환경마다 달라지는 값이라 default 없음 → tfvars 강제
 variable "postgres_host" {
-  description = "로컬 PostgreSQL 호스트 (300-data-layer-base 의 postgres_host 와 같은 값)"
+  description = "PostgreSQL 호스트 — CNPG rw Service FQDN (300-data-layer-base 의 global.postgresHost 와 같은 값)"
   type        = string
 }
 
-# 표준 포트라 여기는 default 를 준다 — 바꿀 때 300 쪽 postgres_port 와 함께 고칠 것
+# 표준 포트라 여기는 default 를 준다 — 바꿀 때 300 쪽 postgresPort 와 함께 고칠 것
 variable "postgres_port" {
-  description = "로컬 PostgreSQL 포트 (300-data-layer-base 의 postgres_port 와 같은 값)"
+  description = "PostgreSQL 포트 (300-data-layer-base 의 postgresPort 와 같은 값)"
   type        = number
   default     = 5432
 }
 
 variable "minio_endpoint" {
-  description = "로컬 MinIO S3 엔드포인트 (300-data-layer-base 의 minio_endpoint 와 같은 값)"
+  description = "로컬 MinIO S3 엔드포인트 (300-data-layer-base 의 minioEndpoint 와 같은 값)"
   type        = string
 }
 
 # ===============================================
-# [코드 전달 — git-sync]
-#   → DAG·커스텀 패키지는 이미지가 아니라 303-git 의 저장소에서 온다.
-#     파드마다 git-sync 사이드카가 붙어 /git/repo 로 받아 오고, Secret 의 DAGS_FOLDER·
-#     PYTHONPATH 가 그 경로를 가리킨다.
-#   ⚠ 303 이 먼저 떠 있어야 이 스택 파드의 init 이 통과한다.
+# [DAG 파싱]
+#   → 코드(DAG·커스텀 패키지)는 airflow 이미지 안(/opt/airflow/repo)에 있다.
+#     DAG 반영 = 이미지 재빌드 → image_tag 변경 → 롤아웃.
 # ===============================================
-
-# 303-git 이 소유한 값이라 default 를 주지 않는다 — 그 스택의 output 을 그대로 옮겨 적는다
-variable "git_repo" {
-  description = "git-sync 가 clone 할 저장소 URL (303-git 의 output git_repo_url 과 같은 값)"
-  type        = string
-}
-
-variable "git_ref" {
-  description = "동기화할 브랜치 — 이 이름이 없으면 파드가 init 에서 멈춘다"
-  type        = string
-  default     = "master"
-}
 
 variable "dag_bundle_refresh_interval" {
   description = "dag-processor 가 DAG 폴더를 다시 훑는 주기(초) — 새 파일이 목록에 나타나기까지의 지연"
   type        = number
   default     = 30
-}
-
-variable "git_sync_period" {
-  description = "fetch 주기 — push 후 반영까지의 최대 지연이자, 저장소에 거는 부하의 하한"
-  type        = string
-  default     = "20s"
 }
 
 # ===============================================

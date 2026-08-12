@@ -8,8 +8,8 @@
 #   주입하므로, 다른 이름이면 태스크가 뜨자마자 실패한다. command/args 를 여기 적지 않는 것도
 #   같은 이유다(Airflow 가 채운다).
 #
-# ⚠ git-sync 를 사이드카로 넣지 말 것. 사이드카는 스스로 끝나지 않아 태스크 파드가 영원히
-#   Running 으로 남는다 = 태스크가 끝나지 않는다. 코드는 initContainer 가 한 번만 받아 온다.
+# 코드(DAG·커스텀 패키지)는 이미지 안(/opt/airflow/repo)에 있다 — 코어 4종과 같은 이미지라
+# 파서와 실행 주체가 항상 같은 코드를 본다(data_layer_airflow/Dockerfile 참조).
 # ===============================================
 apiVersion: v1
 kind: Pod
@@ -29,26 +29,6 @@ spec:
     runAsGroup: ${fs_group}
     fsGroup: ${fs_group}
 
-  initContainers:
-    - name: git-sync-init
-      image: ${gitsync_image}
-      env:
-        - name: GITSYNC_REPO
-          value: "${git_repo}"
-        - name: GITSYNC_REF
-          value: "${git_ref}"
-        - name: GITSYNC_ROOT
-          value: "/git"
-        - name: GITSYNC_LINK
-          value: "repo"
-        - name: GITSYNC_ONE_TIME
-          value: "true"
-        - name: HOME
-          value: "/tmp"
-      volumeMounts:
-        - name: git-repo
-          mountPath: /git
-
   containers:
     - name: base
       image: ${image}
@@ -62,15 +42,8 @@ spec:
             name: data-layer-secrets
         - secretRef:
             name: airflow-env
-      volumeMounts:
-        - name: git-repo
-          mountPath: /git
       # 태스크마다 이만큼을 예약한다 — PARALLELISM 과 곱해진 값이 클러스터에 실제로 필요한 양이다.
       resources:
         requests:
           cpu: "100m"
           memory: "384Mi"
-
-  volumes:
-    - name: git-repo
-      emptyDir: {}

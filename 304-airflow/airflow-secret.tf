@@ -58,13 +58,13 @@ resource "kubernetes_secret_v1" "airflow_env" {
     AIRFLOW__CORE__FERNET_KEY                  = var.airflow_fernet_key
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN        = local.airflow_sql_alchemy_conn
 
-    # ── 코드 위치 (git-sync) ──────────────────────────────────
-    # 이미지에 DAG·커스텀 패키지가 없다 — 303-git 의 저장소를 git-sync 가 /git/repo 로 받아 온다.
+    # ── 코드 위치 ─────────────────────────────────────────
+    # DAG·커스텀 패키지는 이미지 안에 구워져 있다(data_layer_airflow/Dockerfile 의 COPY).
     # ⚠ PYTHONPATH 를 빼면 `from collector ...` 가 깨진다. 이전에 그게 되던 이유는
     #   AIRFLOW_HOME 이 sys.path 에 있어서가 아니라 작업 디렉토리가 /opt/airflow 였기 때문이다
     #   (import airflow 후 sys.path 에 추가되는 것은 config·plugins 둘뿐 — 실측 확인).
-    AIRFLOW__CORE__DAGS_FOLDER = "/git/repo/dags"
-    PYTHONPATH                 = "/git/repo"
+    AIRFLOW__CORE__DAGS_FOLDER = "/opt/airflow/repo/dags"
+    PYTHONPATH                 = "/opt/airflow/repo"
 
     # ── API / 인증 ────────────────────────────────────────
     # ⚠ 아래 두 URL 은 이름만 비슷하고 역할이 정반대다 — 한쪽에 다른 쪽 값을 넣으면
@@ -100,9 +100,8 @@ resource "kubernetes_secret_v1" "airflow_env" {
     AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG = tostring(var.airflow_max_active_tasks_per_dag)
 
     # ── DAG 파싱 ──────────────────────────────────────────
-    # ⚠ git-sync 를 쓰면 '반영까지 걸리는 시간'의 병목이 여기다. 기본 300초라 파일이 이미
-    #   /git/repo 에 도착해 있어도 5분 동안 새 DAG 가 안 보인다(파일은 있는데 목록엔 없다).
-    #   git-sync 주기와 짝을 맞춰 짧게 둔다 — DAG 파일이 몇 개뿐이라 재스캔 비용이 무시할 만하다.
+    # 코드가 이미지에 있어 롤아웃과 함께 갱신되므로 이 주기는 예민하지 않다 —
+    # 기본 300초 대신 짧게 두는 것은 파일이 몇 개뿐이라 재스캔 비용이 무시할 만해서다.
     AIRFLOW__DAG_PROCESSOR__REFRESH_INTERVAL = tostring(var.dag_bundle_refresh_interval)
 
     # ── 스케줄러 ──────────────────────────────────────────

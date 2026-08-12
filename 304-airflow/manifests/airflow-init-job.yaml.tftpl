@@ -50,7 +50,7 @@ spec:
             - |
               set -euo pipefail
 
-              # PG 는 클러스터 밖 로컬 설치라 기동 순서를 Terraform 이 보장하지 못한다.
+              # PG(303-postgres 의 CNPG)는 다른 스택이라 기동 순서를 Terraform 이 보장하지 못한다.
               # `airflow db check` 는 SQL_ALCHEMY_CONN 으로 실제 접속을 시도하므로
               # "포트가 열렸다"가 아니라 "이 계정으로 이 DB 에 붙는다"까지 확인해 준다.
               tries=0

@@ -13,22 +13,15 @@ locals {
   # nonsensitive: 해시는 원본을 노출하지 않는다(어노테이션은 평문으로 보인다).
   airflow_env_hash = nonsensitive(sha256(jsonencode(kubernetes_secret_v1.airflow_env.data)))
 
-  gitsync_image = "${var.harbor_registry}/data-layer/git-sync:${var.image_tag}"
-
-  # 4개 컴포넌트 공통 템플릿 인자 — 한 곳에서만 고치도록 묶는다
+  # 4개 컴포넌트 공통 템플릿 인자 — 한 곳에서만 고치도록 묶는다.
+  # 코드(DAG·커스텀 패키지)는 이미지 안에 있어 이미지 하나가 곧 코드 버전이다 —
+  # 파서와 실행 주체가 다른 커밋을 볼 방법이 없다(구 git-sync 시절의 위험이 사라졌다).
   airflow_common_vars = {
     namespace   = var.namespace
     image       = local.airflow_image
     run_as_user = var.airflow_run_as_user
     fs_group    = var.airflow_fs_group
     config_hash = local.airflow_env_hash
-
-    # 코드를 실어 나르는 사이드카 몫 — 4개 컴포넌트가 같은 저장소·같은 브랜치를 본다
-    # (파서와 실행 주체가 다른 커밋을 보면 "파싱은 새 코드, 실행은 옛 코드"가 된다)
-    gitsync_image   = local.gitsync_image
-    git_repo        = var.git_repo
-    git_ref         = var.git_ref
-    git_sync_period = var.git_sync_period
   }
 }
 

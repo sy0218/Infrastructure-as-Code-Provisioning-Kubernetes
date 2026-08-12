@@ -16,12 +16,9 @@ locals {
 
   # 렌더 결과를 한 번만 만들어 ConfigMap 과 scheduler 의 checksum 두 곳에서 쓴다.
   pod_template_rendered = templatefile("${path.module}/manifests/pod-template.yaml.tftpl", {
-    image         = local.airflow_image
-    gitsync_image = local.gitsync_image
-    run_as_user   = var.airflow_run_as_user
-    fs_group      = var.airflow_fs_group
-    git_repo      = var.git_repo
-    git_ref       = var.git_ref
+    image       = local.airflow_image
+    run_as_user = var.airflow_run_as_user
+    fs_group    = var.airflow_fs_group
   })
 
   # 원형이 바뀌면 scheduler 를 다시 띄워야 한다 — 파일은 볼륨이라 갱신되지만,
@@ -42,7 +39,7 @@ resource "kubernetes_config_map_v1" "airflow_pod_template" {
   }
 
   # 디렉토리째 마운트하고 파일명을 경로에 붙인다 — subPath 로 꽂으면 ConfigMap 이 바뀌어도
-  # 파일이 갱신되지 않는다(그 함정은 git-sync 심볼릭 링크에서 이미 한 번 나왔다).
+  # 파일이 갱신되지 않는다(심볼릭 링크·ConfigMap 갱신을 따라가지 못하는 subPath 공통 함정).
   data = {
     "pod_template.yaml" = local.pod_template_rendered
   }

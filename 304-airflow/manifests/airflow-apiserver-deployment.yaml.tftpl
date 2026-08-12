@@ -42,35 +42,6 @@ spec:
         runAsUser: ${run_as_user}
         runAsGroup: ${fs_group}
         fsGroup: ${fs_group}
-      # ── 코드 전달: git-sync ────────────────────────────────────────────────
-      # 이미지에는 DAG·커스텀 패키지가 없다(data_layer_airflow/Dockerfile 참조) —
-      # 원본은 303-git 의 저장소이고, 이 두 컨테이너가 그것을 emptyDir 로 받아 온다.
-      # 파드 securityContext(uid/gid)를 그대로 상속하므로 받아온 파일 소유자가 airflow 와
-      # 같아 파싱 캐시(.pyc) 경고가 나지 않는다.
-      #
-      # ⚠ initContainer 를 빼지 말 것 — 사이드카만 두면 첫 fetch 전에 airflow 가 먼저 떠서
-      #   'DAG 0개'로 조용히 기동한다.
-      initContainers:
-        - name: git-sync-init
-          image: ${gitsync_image}
-          env:
-            - name: GITSYNC_REPO
-              value: "${git_repo}"
-            - name: GITSYNC_REF
-              value: "${git_ref}"
-            - name: GITSYNC_ROOT
-              value: "/git"
-            - name: GITSYNC_LINK
-              value: "repo"
-            - name: GITSYNC_ONE_TIME
-              value: "true"
-            # git 이 전역 설정을 쓰려 할 때 쓸 쓰기 가능한 HOME (uid 50000 은 홈이 없다)
-            - name: HOME
-              value: "/tmp"
-          volumeMounts:
-            - name: git-repo
-              mountPath: /git
-
       containers:
         - name: apiserver
           image: ${image}
@@ -104,38 +75,3 @@ spec:
             requests:
               cpu: "250m"
               memory: "1Gi"
-          # DAGS_FOLDER 와 PYTHONPATH 가 이 경로를 가리킨다(Secret airflow-env).
-          # ⚠ subPath 로 꽂지 말 것 — git-sync 가 갈아끼우는 심볼릭 링크를 따라가지 못해
-          #   동기화가 영원히 반영되지 않는다(에러도 나지 않는다).
-          volumeMounts:
-            - name: git-repo
-              mountPath: /git
-
-        # 주기적으로 fetch 해 /git/repo 심볼릭 링크를 통째로 갈아끼운다 →
-        # 반쯤 쓰인 파일이 파서에 노출되는 구간이 없다(원자적 교체).
-        - name: git-sync
-          image: ${gitsync_image}
-          imagePullPolicy: IfNotPresent
-          env:
-            - name: GITSYNC_REPO
-              value: "${git_repo}"
-            - name: GITSYNC_REF
-              value: "${git_ref}"
-            - name: GITSYNC_ROOT
-              value: "/git"
-            - name: GITSYNC_LINK
-              value: "repo"
-            - name: GITSYNC_PERIOD
-              value: "${git_sync_period}"
-            - name: HOME
-              value: "/tmp"
-          volumeMounts:
-            - name: git-repo
-              mountPath: /git
-          resources:
-            requests:
-              cpu: "10m"
-              memory: "32Mi"
-      volumes:
-        - name: git-repo
-          emptyDir: {}
