@@ -1,0 +1,43 @@
+# ===============================================
+# [PostgreSQL 메트릭 Service]
+#
+# - PostgreSQL Pod 3개의 모니터링 데이터를 Prometheus가 수집할 수 있게 연결한다.
+# - PostgreSQL은 각 Pod의 9187 포트에서 메트릭을 제공한다.
+# - Service가 3개 Pod를 묶어주고, 302-monitoring의 Prometheus가 이 Service를 통해 수집한다.
+# - 메트릭은 클러스터 내부에서만 사용하므로 ClusterIP를 사용한다.
+#
+# [구조]
+# Prometheus
+#     ↓
+# postgres-metrics Service :9187
+#     ↓
+# PostgreSQL Pod 3개
+# ===============================================
+
+apiVersion: v1
+kind: Service
+
+metadata:
+  # 실제 이름: data-layer-postgres-metrics
+  name: {{ .Values.clusterName }}-metrics
+  namespace: {{ .Values.global.namespace }}
+
+  labels:
+    app: postgres-metrics
+    app.kubernetes.io/name: postgres-metrics
+    app.kubernetes.io/part-of: data-layer
+
+spec:
+  # 클러스터 내부에서만 접근
+  type: ClusterIP
+  selector:
+    
+    # 서비스 연결 → 실제 PostgreSQL 인스턴스 Pod 3개만 연결한다.
+    #   - 어떤 파드를 연결할거니?
+    cnpg.io/cluster: {{ .Values.clusterName }}
+    cnpg.io/podRole: instance
+  ports:
+    - name: metrics
+      # CNPG 인스턴스 매니저 고정 포트 → 설정값이 아니라서 values 로 빼지 않는다
+      port: 9187
+      targetPort: metrics

@@ -1,0 +1,20 @@
+# ===============================================
+# [airflow DB → Database CR]
+#
+# 구 docker 시절 POSTGRES_DB=airflow(엔트리포인트가 생성)의 선언형 승계.
+# 빈 DB 만 만든다 — 스키마는 304-airflow 의 init Job(airflow db migrate)이 소유.
+# CR 을 지워도 DB 는 남는다(databaseReclaimPolicy 기본 retain).
+# ===============================================
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: {{ .Values.clusterName }}-airflow
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/part-of: data-layer
+spec:
+  cluster:
+    name: {{ .Values.clusterName }}
+  name: {{ .Values.databases.airflow }}
+  owner: {{ .Values.secrets.appUser }}

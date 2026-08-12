@@ -1,0 +1,35 @@
+# ===============================================
+# [PostgreSQL 외부 접속 → LoadBalancer Service]
+#
+# 클러스터 안 소비자는 오퍼레이터가 만드는 -rw(ClusterIP) Service DNS 로 붙는다 —
+# 이 Service 는 사람/외부 도구(DBeaver·psql)용 추가 진입점이다.
+# git://(구 303-git)처럼 HTTP 가 아니라 Ingress(L7, Host 헤더)를 못 쓰고,
+# NodePort 는 30000-32767 제약 때문에 표준 포트 5432 를 못 지킨다 —
+# MetalLB VIP 는 <externalIp>:5432 그대로 열 수 있어 이쪽을 쓴다.
+# VIP 광고·장애 전환은 MetalLB(101)가, 대역 소유는 102-ingress 의 IPAddressPool 이 한다.
+#
+# selector 의 instanceRole=primary 는 오퍼레이터가 failover 때 갈아 붙이는 라벨이라
+# 이 Service 는 항상 현재 primary 를 가리킨다(-rw 와 같은 원리).
+# ===============================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Values.clusterName }}-external
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: postgres-external
+    app.kubernetes.io/name: postgres-external
+    app.kubernetes.io/part-of: data-layer
+  annotations:
+    # 폐기된 spec.loadBalancerIP 가 아니라 어노테이션으로 VIP 를 요청한다(102 와 동일)
+    metallb.io/loadBalancerIPs: {{ .Values.externalIp | quote }}
+spec:
+  type: LoadBalancer
+  selector:
+    cnpg.io/cluster: {{ .Values.clusterName }}
+    cnpg.io/instanceRole: primary
+  ports:
+    - name: postgres
+      port: 5432
+      # CNPG 인스턴스 파드의 포트명 — 고정 5432 지만 이름으로 묶는다(house 스타일)
+      targetPort: postgresql

@@ -1,0 +1,31 @@
+postgres 배포 완료
+Release: {{ .Release.Name }}
+Chart  : {{ .Chart.Name }}-{{ .Chart.Version }}
+
+생성된 리소스
+- Cluster  : {{ .Values.clusterName }} (인스턴스 {{ .Values.instances }} — primary 1 + replica {{ sub .Values.instances 1 }})
+- Database : {{ .Values.databases.airflow }} / {{ .Values.databases.icebergCatalog }} (앱 DB {{ .Values.databases.collector }} 는 Cluster bootstrap 이 만든다)
+- Secret   : {{ .Values.clusterName }}-app-user (앱 계정 {{ .Values.secrets.appUser }})
+- Service  : {{ .Values.clusterName }}-metrics (302 스크랩용) / {{ .Values.clusterName }}-external (VIP {{ .Values.externalIp }}:5432)
+- 오퍼레이터가 만드는 것: Service -rw(쓰기=primary)/-ro(replica)/-r(전체), 파드 -1..-{{ .Values.instances }}, PVC, 인스턴스용 SA/Role/RoleBinding
+
+확인 방법
+kubectl -n {{ .Values.global.namespace }} get cluster {{ .Values.clusterName }}     # STATUS: Cluster in healthy state
+kubectl -n {{ .Values.global.namespace }} get pods -l cnpg.io/cluster={{ .Values.clusterName }} -o wide
+kubectl -n {{ .Values.global.namespace }} get svc | grep {{ .Values.clusterName }}
+kubectl -n {{ .Values.global.namespace }} get database                              # reconciled True 확인
+
+주의사항
+- 103-cnpg(CRD/오퍼레이터)와 300-data-layer-base(네임스페이스)가 먼저 설치돼 있어야 한다.
+  → CRD 가 없으면 install 이 "no matches for kind Cluster" 로 죽는다
+    (helm template 은 CRD 검증을 안 해 통과한다 — 안심 금물).
+
+- helm uninstall = Cluster CR 삭제 = 오퍼레이터가 파드·PVC 까지 지운다(데이터 소실).
+  Database CR 삭제는 반대로 DB 를 지우지 않는다(retain).
+
+- 계정값(secrets.*)은 300-data-layer-base 의 postgresUser/postgresPassword 와,
+  DB 이름(databases.*)은 300 의 collectorDbName·icebergCatalogDbName 과
+  같은 커밋에서만 함께 바꾼다.
+
+- 클러스터 안 소비자 주소는 {{ .Values.clusterName }}-rw.{{ .Values.global.namespace }}.svc.cluster.local:5432,
+  클러스터 밖(DBeaver 등)은 {{ .Values.externalIp }}:5432 다.

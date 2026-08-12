@@ -1,0 +1,135 @@
+# ===============================================
+# [PostgreSQL → CNPG Cluster]
+#
+# 파드/PVC/Service 를 직접 만들지 않는다 — 이 선언 하나를 103-cnpg 의
+# 오퍼레이터가 받아 초기화·복제·failover·롤링 업그레이드를 수행한다.
+# 구 initdb.d(01·02·03) 부트스트랩은 bootstrap.initdb + Database CR 로 승계했다:
+#   01 롤/DB        → initdb.owner/secret + databases.collector
+#   01 확장/테이블  → postInitApplicationSQL (\gexec·\connect 는 psql 전용이라 못 쓴다
+#                     — CNPG 는 드라이버로 문장 단위 실행)
+#   02 iceberg DB   → database-iceberg-catalog.yaml (Database CR)
+#   03 lineage      → postInitApplicationSQL (대상 DB 지정이 \connect 를 대체)
+#   POSTGRES_DB     → database-airflow.yaml (Database CR)
+#
+# [주의] 파드 템플릿은 오퍼레이터 소유라 이 저장소의 파드 규약 두 개를 적용할 수
+# 없다(enableServiceLinks:false 필드 없음 — upstream #6234, probe 는 CNPG 가 파생).
+# 근거와 영향은 README '규칙 예외' 참조.
+# ===============================================
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: {{ .Values.clusterName }}
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/part-of: data-layer
+spec:
+  instances: {{ .Values.instances }}
+
+  # operand 이미지 — postgres 16.14 + timescaledb 2.29.0 (핀 근거는 Dockerfile 주석)
+  imageName: {{ .Values.global.harborRegistry }}/data-layer/postgres:{{ .Values.global.imageTag }}
+  imagePullPolicy: IfNotPresent
+
+  # 마이너 업그레이드 시 replica 부터 갈고 primary 는 자동 switchover (랩 — 사람 개입 없음)
+  primaryUpdateStrategy: unsupervised
+
+  # 오퍼레이터가 만드는 하위 오브젝트 전부에 상속시킬 라벨
+  inheritedMetadata:
+    labels:
+      app.kubernetes.io/part-of: data-layer
+
+  bootstrap:
+    initdb:
+      database: {{ .Values.databases.collector }}
+      owner: {{ .Values.secrets.appUser }}
+      secret:
+        name: {{ .Values.clusterName }}-app-user
+      # 앱 DB 에 superuser 로 실행된다(빈 볼륨 최초 부트스트랩 1회).
+      # 문장 하나가 항목 하나 — 실패하면 부트스트랩 전체가 실패한다(파드 로그로 확인).
+      postInitApplicationSQL:
+        # timescaledb 는 trusted 확장이 아니라 여기(superuser)서 만들어 둬야
+        # 비-superuser 가 된 앱 계정의 CREATE EXTENSION IF NOT EXISTS 가 NOTICE 로 끝난다
+        - CREATE EXTENSION IF NOT EXISTS timescaledb
+        - CREATE SCHEMA IF NOT EXISTS {{ .Values.collectorDbSchema }} AUTHORIZATION {{ .Values.secrets.appUser }}
+        # 배치 수집 잡 정의 (구 01_collector_db.sh — 컬럼 의미는 data_layer_postgres/initdb.d 참조)
+        - >-
+          CREATE TABLE IF NOT EXISTS {{ .Values.collectorDbSchema }}.collect_job (
+            job_id          bigserial PRIMARY KEY,
+            job_name        text        NOT NULL,
+            collector_type  text        NOT NULL,
+            processor_name  text        NOT NULL,
+            topic           text        NOT NULL,
+            config          jsonb       NOT NULL,
+            enabled         boolean     NOT NULL DEFAULT true,
+            run_hours       integer[]   NOT NULL)
+        - ALTER TABLE {{ .Values.collectorDbSchema }}.collect_job OWNER TO {{ .Values.secrets.appUser }}
+        # 실시간 수집 소스 (TCP_SOCKET | CDC)
+        - >-
+          CREATE TABLE IF NOT EXISTS {{ .Values.collectorDbSchema }}.realtime_source (
+            source_id    bigserial PRIMARY KEY,
+            source_name  text        NOT NULL UNIQUE,
+            source_type  text        NOT NULL,
+            topic        text        NOT NULL,
+            config       jsonb       NOT NULL,
+            enabled      boolean     NOT NULL DEFAULT true)
+        - ALTER TABLE {{ .Values.collectorDbSchema }}.realtime_source OWNER TO {{ .Values.secrets.appUser }}
+        # 데이터 계보 (구 03_data_lineage.sql — SET TIME ZONE 은 클러스터 timezone 파라미터로 대체)
+        - >-
+          CREATE TABLE IF NOT EXISTS {{ .Values.collectorDbSchema }}.data_lineage (
+            entity_key    text        NOT NULL,
+            ingest_ts     timestamptz NOT NULL,
+            event_ts      timestamptz NOT NULL,
+            source_type   text        NOT NULL,
+            source_detail text        NOT NULL,
+            target_type   text        NOT NULL,
+            target_detail text        NOT NULL,
+            last_event_ts timestamptz,
+            process_count int         NOT NULL DEFAULT 1,
+            PRIMARY KEY (entity_key, ingest_ts, source_detail, target_detail))
+        - ALTER TABLE {{ .Values.collectorDbSchema }}.data_lineage OWNER TO {{ .Values.secrets.appUser }}
+        - >-
+          SELECT create_hypertable('{{ .Values.collectorDbSchema }}.data_lineage', 'ingest_ts',
+            chunk_time_interval => INTERVAL '1 day', if_not_exists => TRUE)
+
+  managed:
+    roles:
+      # 앱 계정의 지속 관리(비밀번호 드리프트 동기화) — 구 01 의 무조건 ALTER ROLE 승계.
+      # 구 Ansible 롤의 SUPERUSER CREATEDB 계약을 여기서 끊는다:
+      # 3개 DB 전부 이 계정이 owner 라 migrate/DDL 에 superuser 가 필요 없고,
+      # DB 생성은 Database CR 소관이다. 임시 관리 작업은 kubectl exec + psql -U postgres.
+      - name: {{ .Values.secrets.appUser }}
+        ensure: present
+        login: true
+        superuser: false
+        createdb: false
+        passwordSecret:
+          name: {{ .Values.clusterName }}-app-user
+
+  postgresql:
+    # parameters 에 직접 쓰면 거부된다(오퍼레이터 관리 파라미터) — 전용 필드 사용.
+    # 첫 기동 전에 CNPG 가 conf 를 써 두므로 위 CREATE EXTENSION 이 성공한다.
+    shared_preload_libraries:
+      - timescaledb
+    parameters:
+      # 구 Ansible drop-in(10-data-layer.conf) 승계. listen_addresses/port/wal_level 등은
+      # 오퍼레이터 관리라 적지 않는다(적으면 거부). pg_hba 도 기본값(host all all all scram)이
+      # 구 pod/node CIDR 규칙보다 넓어 추가하지 않는다.
+      max_connections: "200"
+      timezone: "Asia/Seoul"
+      log_timezone: "Asia/Seoul"
+
+  storage:
+    storageClass: {{ .Values.storage.storageClass }}
+    size: {{ .Values.storage.size }}
+
+  # requests-only 규약 (limits 없음)
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+
+  affinity:
+    # 기본값(preferred)이 아니라 required 인 이유: 노드 3 = 인스턴스 3 인 랩이라
+    # 두 인스턴스가 한 노드에 겹치는 순간 그 노드가 다수결(2/3)의 SPOF 가 된다.
+    podAntiAffinityType: required
+    topologyKey: kubernetes.io/hostname

@@ -12,7 +12,8 @@ apiVersion: metallb.io/v1beta1
 kind: L2Advertisement
 
 metadata:
-  name: ingress-vip
+  # → Pool 이름과 같은 이름을 쓴다 — 이 템플릿은 VIP(풀)마다 한 번씩 렌더된다.
+  name: ${pool_name}
   namespace: ${metallb_namespace}
 
 spec:

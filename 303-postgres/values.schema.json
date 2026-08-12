@@ -1,0 +1,95 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "postgres values",
+  "description": "원본 '환경 의존 변수는 default 없이 tfvars 강제' 규칙의 Helm 판 — 필수 키 누락·오타·형식 오류를 렌더(lint/template/install) 시점에 잡는다. global 은 루트가 다른 차트용 키까지 통짜로 주입하므로 additionalProperties 를 막지 않는다.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "global",
+    "clusterName",
+    "instances",
+    "storage",
+    "externalIp",
+    "databases",
+    "collectorDbSchema",
+    "secrets"
+  ],
+  "properties": {
+    "global": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["namespace", "harborRegistry", "imageTag"],
+      "properties": {
+        "namespace": {
+          "type": "string",
+          "description": "RFC 1123 라벨 — 소문자/숫자/하이픈만",
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "maxLength": 63
+        },
+        "harborRegistry": {
+          "type": "string",
+          "description": "스킴 없음·밑줄 금지 — Docker 이미지 참조 파서가 밑줄 든 domain 을 거부한다",
+          "pattern": "^[a-z0-9]([-.a-z0-9]*[a-z0-9])?(:[0-9]+)?$"
+        },
+        "imageTag": {
+          "type": "string",
+          "description": "git SHA 기반 불변 태그",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+        }
+      }
+    },
+    "clusterName": {
+      "type": "string",
+      "description": "CNPG Cluster 이름 — 오퍼레이터가 접미사(-rw/-metrics 등)를 붙일 여유를 남긴다. 302-monitoring 의 keep regex 와 커플링(같은 커밋 규칙)",
+      "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+      "maxLength": 50
+    },
+    "instances": {
+      "type": "integer",
+      "description": "primary 1 + replica N-1. required podAntiAffinity 라 노드 수(3)가 상한",
+      "minimum": 1,
+      "maximum": 3
+    },
+    "storage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["storageClass", "size"],
+      "properties": {
+        "storageClass": { "type": "string", "minLength": 1 },
+        "size": {
+          "type": "string",
+          "pattern": "^[0-9]+(Gi|Mi)$"
+        }
+      }
+    },
+    "externalIp": {
+      "type": "string",
+      "description": "MetalLB VIP (IPv4) — 102-ingress 의 IPAddressPool 과 같은 값(같은 커밋 규칙)",
+      "pattern": "^([0-9]{1,3}\\.){3}[0-9]{1,3}$"
+    },
+    "databases": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["collector", "airflow", "icebergCatalog"],
+      "properties": {
+        "collector": { "type": "string", "pattern": "^[a-z_][a-z0-9_]*$" },
+        "airflow": { "type": "string", "pattern": "^[a-z_][a-z0-9_]*$" },
+        "icebergCatalog": { "type": "string", "pattern": "^[a-z_][a-z0-9_]*$" }
+      }
+    },
+    "collectorDbSchema": {
+      "type": "string",
+      "description": "collector DB 안의 스키마 — 300 의 collectorDbSchema 와 같은 값(같은 커밋 규칙)",
+      "pattern": "^[a-z_][a-z0-9_]*$"
+    },
+    "secrets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["appUser", "appPassword"],
+      "properties": {
+        "appUser": { "type": "string", "pattern": "^[a-z_][a-z0-9_]*$" },
+        "appPassword": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}
