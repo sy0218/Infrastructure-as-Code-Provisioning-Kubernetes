@@ -6,10 +6,10 @@
 # Kubernetes 클러스터에 접속할 때 사용할 kubeconfig 파일 경로
 kubeconfig_path = "~/.kube/config"
 
-# Helm으로 설치할 Local Path Provisioner의 버전
+# Helm으로 → 설치할 Local Path Provisioner의 버전
 local_path_chart_version = "0.0.37"
 
-# Helm으로 설치할 Longhorn의 버전
+# Helm으로 → 설치할 Longhorn의 버전
 longhorn_chart_version = "1.11.3"
 
 
@@ -20,4 +20,4 @@ longhorn_chart_version = "1.11.3"
 longhorn_data_path = "/data/longhorn"
 
 # Longhorn 복제 데이터 갯수
-longhorn_replica_count = 3
+longhorn_replica_count = 2

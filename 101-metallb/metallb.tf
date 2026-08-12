@@ -1,5 +1,5 @@
 # ===============================================
-# [MetalLB — 온프렘 Kubernetes의 LoadBalancer 구현체]
+# [MetalLB → 온프렘 Kubernetes의 LoadBalancer 구현체]
 #
 # → 클라우드 환경에서는 AWS/GCP 등이
 #   type: LoadBalancer Service에 외부 IP를 자동으로 할당해 준다.
@@ -11,6 +11,7 @@
 #
 # 이 스택의 역할
 # → MetalLB의 기본 기능만 설치한다.
+
 # → 실제로 사용할 VIP 대역(IPAddressPool)과
 #   VIP를 네트워크에 알리는 방법(L2Advertisement)은
 #   102-ingress에서 설정한다.
@@ -33,12 +34,8 @@ resource "helm_release" "metallb" {
     # ===========================================
     # [BGP 비활성화]
     #
-    # → MetalLB는 L2 방식과 BGP 방식으로
-    #   외부 IP(VIP)를 광고할 수 있다.
-    #
-    # → 이 환경에서는 L2 방식만 사용하므로
-    #   BGP 기능은 끈다.
-    #
+    # → MetalLB는 L2 방식과 BGP 방식으로 외부 IP(VIP)를 광고할 수 있다.
+    # → 이 환경에서는 L2 방식만 사용하므로 BGP 기능은 끈다.
     # → 기본값을 그대로 두면 FRR 기반 BGP 구성요소가
     #   함께 배포될 수 있으므로 불필요한 리소스를 사용하게 된다.
     # ===========================================
@@ -51,9 +48,7 @@ resource "helm_release" "metallb" {
     #
     # → Controller는 MetalLB 설정을 관리하는 Pod다.
     # → 1개만 실행된다.
-    #
-    # → 매우 가벼운 컴포넌트이므로
-    #   필요한 최소 CPU/메모리만 예약한다.
+    # → 매우 가벼운 컴포넌트이므로 필요한 최소 CPU/메모리만 예약한다.
     # ===========================================
     controller = {
       resources = {
@@ -67,14 +62,9 @@ resource "helm_release" "metallb" {
     # ===========================================
     # [Speaker 리소스]
     #
-    # → Speaker는 각 Kubernetes 노드마다 1개씩 실행된다.
-    #   (DaemonSet)
-    #
-    # → L2 방식에서는 Speaker가 VIP를
-    #   네트워크에 광고하는 역할을 한다.
-    #
-    # → 가벼운 프로세스이므로
-    #   필요한 최소 CPU/메모리만 예약한다.
+    # → Speaker는 각 Kubernetes 노드마다 1개씩 실행된다. (DaemonSet)
+    # → L2 방식에서는 Speaker가 VIP를 네트워크에 광고하는 역할을 한다.
+    # → 가벼운 프로세스이므로 필요한 최소 CPU/메모리만 예약한다.
     # ===========================================
     speaker = {
       resources = {
