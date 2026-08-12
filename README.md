@@ -1,16 +1,52 @@
-# ☸️ Terraform 기반 쿠버네티스 배포 자동화 (IaC)
+# ☸️ Terraform + Helm(ArgoCD) 기반 쿠버네티스 배포 자동화 (IaC)
 
-**Terraform 기반 IaC로 쿠버네티스 리소스를 코드로 선언하고,
+**쿠버네티스 리소스를 코드로 선언하고,
 데이터 파이프라인 스택을 자동으로 배포하는 프로젝트 입니다.**
 
 Infrastructure as Code(IaC) 기반으로 **클러스터 위의 애플리케이션을 코드로 관리하여 동일한 환경을 언제든 재현**할 수 있으며, **기능별로 구성 요소를 분리해 필요한 부분만 독립적으로 배포하고 관리할 수 있도록 표준화된 배포 체계를 제공**합니다.
+
+**역할에 따라 도구를 나눠 씁니다** — 플랫폼(`100~200`)은 **Terraform**, 애플리케이션 워크로드(`300` 이후)는 **Helm 차트(+ ArgoCD 예정)** 로 배포합니다. 이유는 [도구 경계](#-도구-경계--terraform과-helm을-나눠-쓰는-이유) 참조.
 
 ---
 </br>
 
 # ✨ 주요 특징
-- **스택 기반 모듈 구조** → 번호 디렉토리 하나 = 독립 루트 모듈 = 독립 state, 번호가 곧 적용 순서
-- **매니페스트 템플릿화** → `kubernetes_manifest` + `templatefile` 로 YAML 을 변수에서 조립
+- **역할별 도구 분리** → 플랫폼(100~200)은 Terraform, 애플리케이션 워크로드(300 이후)는 Helm 차트(+ ArgoCD)
+- **스택 기반 모듈 구조** → 번호 디렉토리 하나 = 독립 스택(Terraform 루트 모듈 또는 Helm 차트), 번호가 곧 적용 순서
+- **매니페스트 템플릿화** → Terraform 은 `kubernetes_manifest` + `templatefile`, Helm 은 `templates/` + `values.schema.json` 으로 YAML 을 변수에서 조립
+
+---
+</br>
+
+# 🧭 도구 경계 — Terraform과 Helm을 나눠 쓰는 이유
+
+> **한 줄 요약: 남이 만든 것(플랫폼)은 Terraform 으로 설치하고, 우리가 만든 것(워크로드)은 Helm 차트로 배포합니다.**
+
+| 구간 | 내용물 | 도구 | 이유 |
+|---|---|---|---|
+| `100 ~ 103` | 스토리지 · LoadBalancer · Ingress · DB 오퍼레이터 | **Terraform** | 서드파티 차트 설치 + CR 적용 순서 제어(`depends_on`) |
+| `200` | Harbor 레지스트리 | **Terraform** | 차트 설치 + **Harbor REST API 설정**(프로젝트 생성)은 차트로 표현 불가 |
+| `300 이후` | 데이터 파이프라인 워크로드 | **Helm 차트 (+ ArgoCD 예정)** | 직접 작성한 매니페스트라 자기 차트가 됨 · sync-wave 가 번호 순서를 대체 |
+
+## 왜 이렇게 나누는가
+
+- **100~200 의 내용물은 이미 Helm 입니다.** 전부 `helm_release` 로 서드파티 차트(local-path · Longhorn · MetalLB · ingress-nginx · Harbor)를 설치하는 스택입니다. 이걸 다시 Helm 차트로 감싸면 업스트림 차트에 values 만 넘기는 빈 껍데기 차트가 생길 뿐이고, 대신 `terraform plan` 의 변경 미리보기와 버전 고정 강제를 잃습니다.
+- **200-harbor 는 순수 Helm 으로 표현할 수 없습니다.** `harbor_project` 리소스가 Harbor **REST API** 를 호출해 `data-layer` 프로젝트를 만듭니다 — 쿠버네티스 오브젝트가 아니라서 차트 템플릿으로 만들 수 없습니다.
+- **102 의 설치 순서는 Terraform 이 해결합니다.** ingress-nginx 는 MetalLB `IPAddressPool` 이 먼저 있어야 EXTERNAL-IP 를 받습니다. Helm 에는 릴리스 간 `depends_on` 이 없습니다.
+- **300 이후는 직접 작성한 워크로드입니다.** 차트로 만들면 진짜 자기 차트(`templates/` + `values.schema.json`)가 나오고, 그대로 ArgoCD Application 이 됩니다.
+
+## 전환 로드맵 (현재 위치)
+
+| 단계 | 내용 | 상태 |
+|---|---|---|
+| 1 | `300-data-layer-base` 를 Terraform → Helm 차트로 전환 | ✅ 완료 (첫 전환 스택) |
+| 2 | `301~307` · `400` 을 Helm 차트로 전환 | 🔄 진행 중 (301 · 302 완료) |
+| 2.5 | PostgreSQL 을 노드 로컬(Ansible) → K8s 복귀 — `103-cnpg`(오퍼레이터) + `303-postgres`(CNPG Cluster, 구 303-git 자리) | ✅ 완료 (컷오버는 배포 순서 참조) |
+| 3 | ArgoCD 설치 — Terraform 신규 스택(예: `201-argocd`)으로 부트스트랩 | 📋 계획 |
+| 4 | app-of-apps 구성 — **sync-wave 가 디렉토리 번호 순서를 대체** | 📋 계획 |
+
+> 전환이 끝나면 Terraform 의 역할은 **"클러스터 위 플랫폼 부트스트랩(100~201)"** 으로 닫히고,
+> 이후의 모든 워크로드 변경은 **`git push → ArgoCD sync`** 로만 흐릅니다.
 
 ---
 </br>
@@ -19,11 +55,12 @@ Infrastructure as Code(IaC) 기반으로 **클러스터 위의 애플리케이�
 | 항목 | 내용 |
 |------|------|
 | Kubernetes | kubeadm 3노드 (ap=.200 control-plane / s1=.201 / s2=.202), `v1.34.4`, containerd |
-| Terraform | `1.15.8` |
+| Terraform | `1.15.8` — 플랫폼(100~200) + Helm 전환 전 워크로드 스택 |
+| Helm | `3.19.0` — 워크로드 차트(300 이후) 배포용 CLI |
 | Provider | kubernetes `2.38.0` / helm `3.2.0` / harbor `3.10.21` |
-| Helm 차트 | local-path `0.0.37` / longhorn `1.11.3` / metallb `0.16.1` / ingress-nginx `4.15.1` / harbor `1.18.4` |
+| Helm 차트 | local-path `0.0.37` / longhorn `1.11.3` / metallb `0.16.1` / ingress-nginx `4.15.1` / harbor `1.18.4` / cloudnative-pg `0.29.0` |
 | Cluster Access | ~/.kube/config (cluster-admin) |
-| 선행 조건 (Ansible) | Kubernetes / Longhorn Prerequisites / etc_hosts / Kafka / PostgreSQL / MinIO / Neo4j |
+| 선행 조건 (Ansible) | Kubernetes / Longhorn Prerequisites / etc_hosts / Kafka / MinIO / Neo4j (PostgreSQL 롤은 퇴역 — `303-postgres` 가 승계) |
 | 선행 조건 (Manual) | 이미지 21종 Build & Push (`build_and_push.sh`) |
 
 ---
@@ -32,14 +69,19 @@ Infrastructure as Code(IaC) 기반으로 **클러스터 위의 애플리케이�
 # 📂 디렉토리 구조
 ```bash
 Infrastructure-as-Code-Terraform.kubernetes/
+│
+│ # ── 플랫폼 (Terraform) ─────────────────────────────────────────
 ├── 100-base/               # Kubernetes 기본 환경 구성 (StorageClass, Longhorn)
 ├── 101-metallb/            # MetalLB (온프렘 LoadBalancer — 차트만, VIP는 102 소유)
-├── 102-ingress/            # 외부 접속 진입점 (VIP + ingress-nginx)
+├── 102-ingress/            # 외부 접속 진입점 (VIP + ingress-nginx) + PostgreSQL 외부 VIP
+├── 103-cnpg/               # CloudNativePG 오퍼레이터 (Cluster CR 은 303 소유)
 ├── 200-harbor/             # Harbor 이미지 레지스트리
-├── 300-data-layer-base/    # 데이터 레이어 공통 리소스 (Namespace, ConfigMap, Secret, RBAC)
-├── 301-kafka-tools/        # Kafka 운영 도구 (Schema Registry, Kafka UI, Exporter)
-├── 302-monitoring/         # 모니터링 (Alloy, Prometheus, Grafana)
-├── 303-git/                # Git 저장소 서버
+│
+│ # ── 애플리케이션 워크로드 (Helm 차트 + ArgoCD 예정 · ✅ = 전환 완료) ──
+├── 300-data-layer-base/    # ✅ 데이터 레이어 공통 리소스 (Namespace, ConfigMap, Secret, RBAC)
+├── 301-kafka-tools/        # ✅ Kafka 운영 도구 (Schema Registry, Kafka UI, Exporter)
+├── 302-monitoring/         # ✅ 모니터링 (Alloy, Prometheus, Grafana)
+├── 303-postgres/           # ✅ 플랫폼 PostgreSQL (CNPG Cluster 3인스턴스 — 구 303-git 자리)
 ├── 304-airflow/            # Airflow 워크플로우 엔진
 ├── 305-api/                # Data Layer API 및 관리 화면
 ├── 306-cdc/                # CDC(Kafka Connect + Debezium)
@@ -48,16 +90,17 @@ Infrastructure-as-Code-Terraform.kubernetes/
 ```
 
 ## 각 디렉토리의 의미
-- **하나의 번호 디렉토리 = 하나의 서비스(스택)**
-- 각 스택은 **독립적으로 Terraform을 실행(`terraform apply`)** 할 수 있습니다.
-- 각 스택은 **자신만의 Terraform State**를 관리하며, 다른 스택과 State를 공유하지 않습니다.
+- **하나의 번호 디렉토리 = 하나의 서비스(스택)** — 독립적으로 배포/삭제할 수 있습니다.
+- **Terraform 스택**(100~200, 301~400 중 전환 전 스택)은 자신만의 Terraform State 를 가지며, 다른 스택과 State 를 공유하지 않습니다.
+- **Helm 차트 스택**(현재 `300-data-layer-base` · `301-kafka-tools` · `302-monitoring` · `303-postgres`)은 자신만의 Helm 릴리스로 관리됩니다.
 - 스택 간 실행 순서는 **디렉토리 번호(100 → 200 → 300 …)** 로 관리합니다.
+  - ArgoCD 도입 후에는 이 번호 순서를 **sync-wave** 가 대체할 예정입니다.
 
 > 즉, **100-base**를 먼저 배포한 후 **200-harbor**, 이후 **300-data-layer-base** 순으로 배포하면 됩니다.
 
 ---
 
-## 각 스택의 공통 파일 구성
+## Terraform 스택의 공통 파일 구성 (100~200 · 301~400 중 전환 전 스택)
 
 ```bash
 각 스택 내부(공통 파일 구성):
@@ -94,13 +137,35 @@ Infrastructure-as-Code-Terraform.kubernetes/
 > - **1개의 `.yaml.tftpl` = 1개의 Kubernetes 리소스(YAML 문서)**
 > - 스택 간 의존성은 Terraform 코드가 아닌 **배포 순서(디렉토리 번호)** 로 관리합니다.
 
+---
 
+## Helm 차트 스택의 공통 파일 구성 (300 이후 · 전환 완료 스택)
+
+```bash
+각 차트 내부(공통 파일 구성):
+├── Chart.yaml              # 차트 이름/버전 (정확 고정 — 범위 금지)
+├── values.yaml             # 환경별 설정값
+├── values.schema.json      # 필수 키/형식 검증 (누락·오타를 배포 전에 차단)
+├── templates/*.yaml        # Kubernetes YAML 템플릿
+└── templates/NOTES.txt     # 설치 후 안내 출력
+```
+
+### Terraform ↔ Helm 대응 관계
+> 두 형식은 **같은 원칙을 다른 문법으로 구현**합니다. Terraform 스택만 보던 사람도 아래 표만 알면 차트를 읽을 수 있습니다.
+
+| Terraform | Helm | 역할 |
+|---|---|---|
+| `terraform.tfvars` | `values.yaml` | 환경별 설정값 |
+| 변수에 `default` 없음 → `plan` 에러 | `values.schema.json` 의 `required` | 필수값 누락을 배포 전에 차단 |
+| `manifests/*.yaml.tftpl` | `templates/*.yaml` | Kubernetes YAML 템플릿 |
+| `terraform plan` | `helm template` + `kubectl diff` | 배포 전 변경 미리보기 |
+| Terraform State | Helm 릴리스 기록 (`sh.helm.release.v1.*` Secret) | 배포 이력/소유 추적 |
 
 ---
 </br>
 
-# ⚙️ 0단계 → 이미지 빌드/푸시 (Terraform 밖 수동 단계)
-> **`200-harbor` apply 직후, 워크로드 스택(`301~307`, `400`) apply 전에 한 번 실행합니다.**
+# ⚙️ 0단계 → 이미지 빌드/푸시 (Terraform/Helm 밖 수동 단계)
+> **`200-harbor` apply 직후, 워크로드 스택(`301~307`, `400`) 배포 전에 한 번 실행합니다.**
 ```bash
 docker login data-layer-harbor              # 사전: /etc/docker/daemon.json 의 insecure-registries
 /my_project/data_pipeline/scripts/build_and_push.sh v0.1.0
@@ -108,19 +173,27 @@ docker login data-layer-harbor              # 사전: /etc/docker/daemon.json �
 - 모든 워크로드는 `data-layer-harbor/data-layer/<name>:<tag>` 를 pull 한다 (예외 없음)
 - 여기서 쓴 태그를 각 스택 `terraform.tfvars` 의 `image_tag` 에 **그대로** 넣는다
 - `[주의]` `imagePullPolicy: IfNotPresent` 라서 **태그 재사용 금지**
-- `300-data-layer-base` 는 이미지를 쓰지 않아(`harbor_registry`/`image_tag` 변수 없음) 이 단계보다 먼저 apply 해도 된다
+- `300-data-layer-base` 는 이미지를 쓰지 않아(`harbor_registry`/`image_tag` 값 없음) 이 단계보다 먼저 배포해도 된다
 
 ---
 </br>
 
-# 🚀 Terraform 실행
-스택마다 각자 `init` 부터 시작하며, **번호 순서대로** 적용합니다.
+# 🚀 배포 실행
+**번호 순서대로** 배포합니다. 플랫폼(100~200)은 Terraform, 워크로드(300 이후)는 Helm 입니다.
+
+## 1) 플랫폼 — Terraform (100 ~ 200)
+스택마다 각자 `init` 부터 시작합니다.
 ```bash
 terraform -chdir=100-base init && terraform -chdir=100-base apply
 
 terraform -chdir=101-metallb init && terraform -chdir=101-metallb apply
 # ↑ 101 을 apply 해야 102 의 plan 이 통과합니다 (MetalLB CRD 가 여기서 생깁니다)
 terraform -chdir=102-ingress init && terraform -chdir=102-ingress apply
+# ↑ 인그레스 VIP(.240)와 함께 PostgreSQL 외부 접속 VIP(.241, postgres-vip 풀)도 여기서 등록됩니다
+
+terraform -chdir=103-cnpg init && terraform -chdir=103-cnpg apply
+# ↑ CloudNativePG 오퍼레이터(CRD 포함)만 설치합니다 — Cluster CR 은 303-postgres 차트 소유.
+#   103 을 apply 해야 303 의 helm install 이 통과합니다 ("no matches for kind Cluster" 방지)
 
 terraform -chdir=200-harbor init && terraform -chdir=200-harbor apply
 # ↑ 여기서 build_and_push.sh 실행
@@ -132,14 +205,34 @@ terraform -chdir=200-harbor init && terraform -chdir=200-harbor apply
 #   refresh 를 한 번 건너뛰어 Ingress 를 먼저 만든 뒤, 그 다음부터 정상 apply 한다.
 #   terraform -chdir=200-harbor apply -refresh=false
 #   terraform -chdir=200-harbor apply
+```
 
-terraform -chdir=300-data-layer-base init && terraform -chdir=300-data-layer-base apply
-terraform -chdir=301-kafka-tools init && terraform -chdir=301-kafka-tools apply
-terraform -chdir=302-monitoring init && terraform -chdir=302-monitoring apply
-terraform -chdir=303-git init && terraform -chdir=303-git apply
-# ↑ 여기서 Ansible local_git_ansible.yml 실행 (저장소 부트스트랩)
+## 2) 워크로드 — Helm (300 이후)
+```bash
+# 공통 리소스 (Namespace/ConfigMap/Secret/RBAC) — 첫 Helm 전환 스택
+helm template data-layer-base ./300-data-layer-base        # 배포 전 미리보기
+helm install data-layer-base ./300-data-layer-base -n default
+# ↑ 릴리스 기록은 default 네임스페이스에 둡니다 — data-layer 네임스페이스는 차트 자신이 만듭니다
+#   (--create-namespace 금지: 차트의 Namespace 오브젝트와 소유권이 충돌합니다)
+#   값 변경은 helm upgrade 로만 합니다 — uninstall 은 네임스페이스째 지워 301~400 의 모든 워크로드가 같이 사라집니다
+
+# 301 은 Helm 전환 완료 — Kafka 운영 도구
+helm template kafka-tools ./301-kafka-tools                # 배포 전 미리보기
+helm install kafka-tools ./301-kafka-tools -n data-layer
+
+# 302 는 Helm 전환 완료 — 모니터링 (Alloy/Prometheus/Grafana)
+helm template monitoring ./302-monitoring                  # 배포 전 미리보기
+helm install monitoring ./302-monitoring -n data-layer
+# ↑ 릴리스 기록은 data-layer 에 둡니다 — 300 과 달리 네임스페이스가 이미 있습니다
+
+# 303 은 Helm 전환 완료 — 플랫폼 PostgreSQL (CNPG Cluster 3인스턴스)
+helm lint 303-postgres                                     # 문법 + 스키마 검사
+helm template postgres ./303-postgres                      # 미리보기 (⚠ CRD 검증은 안 됩니다 — 103 필요)
+helm install postgres ./303-postgres -n data-layer
+kubectl -n data-layer get cluster data-layer-postgres      # "Cluster in healthy state" 확인 후 304 진행
 
 terraform -chdir=304-airflow init && terraform -chdir=304-airflow apply
+# ↑ 303 의 CNPG 클러스터가 healthy 여야 init Job(db migrate)이 통과합니다
 terraform -chdir=305-api init && terraform -chdir=305-api apply
 terraform -chdir=306-cdc init && terraform -chdir=306-cdc apply
 terraform -chdir=307-pipeline init && terraform -chdir=307-pipeline apply
@@ -149,21 +242,28 @@ terraform -chdir=400-test-rdb init && terraform -chdir=400-test-rdb apply
 #   맨 뒤이고, 여기까지 오면 s1 의 docker 를 제거할 수 있습니다.
 #   ⚠ 넷을 한꺼번에 올리면 랩 용량(노드당 2.8Gi)을 넘깁니다 — 아래 '필수 준비 사항' 참조.
 ```
-> `[주의]` **`terraform apply` / `destroy` 는 엔지니어가 직접 실행합니다.**
+> `[주의]` **`terraform apply/destroy` · `helm install/upgrade/uninstall` 은 엔지니어가 직접 실행합니다.**
+>
+> ArgoCD 도입 후에는 **2) 워크로드 구간 전체가 `git push → ArgoCD sync` 로 대체**됩니다. → [전환 로드맵](#전환-로드맵-현재-위치)
 
 ### 검증용 명령
 ```bash
+# Terraform 스택
 terraform -chdir=<스택> fmt -check     # 포맷 검사
 terraform -chdir=<스택> validate       # 문법 검증 (init 이후)
 terraform -chdir=<스택> output         # 접속 주소 등 공개 값 확인
+
+# Helm 차트 스택
+helm lint <차트 디렉토리>                                    # 문법 + values.schema.json 검증
+helm template <릴리스> <차트 디렉토리> | kubectl diff -f -   # 배포 전 변경 미리보기
 ```
 
 ---
 </br>
 
-# 🧩 Terraform 배포 전 필수 준비 사항
+# 🧩 배포 전 필수 준비 사항
 
-`Terraform`을 실행하기 전에 아래 작업이 **먼저 완료되어야 합니다.**
+`Terraform`/`Helm` 을 실행하기 전에 아래 작업이 **먼저 완료되어야 합니다.**
 준비되지 않은 상태에서 배포하면 일부 서비스가 정상적으로 실행되지 않습니다.
 
 | 대상 | 먼저 해야 할 작업 | 준비되지 않으면 |
@@ -172,8 +272,9 @@ terraform -chdir=<스택> output         # 접속 주소 등 공개 값 확인
 | **102-ingress** | VIP(`192.168.56.240`)가 노드망에서 비어 있는지 확인 + VirtualBox host-only 어댑터 무차별 모드 허용 | VIP에 ARP 응답이 오지 않아 접속이 되지 않습니다(파드는 정상이라 원인 추적이 어렵습니다). |
 | **인그레스 서비스 전체** | `etc_hosts` Ansible 재실행 (`--tags etc_hosts`) + 접속하는 PC의 hosts 파일 수정 | 이름이 VIP로 풀리지 않아 Grafana·Airflow·API 등이 전부 접속 불가가 됩니다. |
 | **301-kafka-tools** | `kafka_ansible.yml` 실행하여 Kafka Broker 설치 | Schema Registry, Kafka UI 등이 Kafka에 연결하지 못합니다. |
-| **애플리케이션 스택 전체** | PostgreSQL, MinIO, Neo4j Ansible 실행 | 데이터 저장소가 없어 애플리케이션이 계속 재시작됩니다. |
-| **304-airflow** | `303-git` 배포 후 `local_git_ansible.yml` 실행 | Airflow의 `git-sync`가 저장소를 가져오지 못해 초기화 단계에서 멈춥니다. |
+| **애플리케이션 스택 전체** | MinIO, Neo4j Ansible 실행 (PostgreSQL 은 `303-postgres` 가 담당) | 데이터 저장소가 없어 애플리케이션이 계속 재시작됩니다. |
+| **303-postgres** | `103-cnpg` apply + 이미지 2종(`postgres`·`cloudnative-pg`) push | CRD 가 없으면 install 이 "no matches for kind Cluster" 로 죽고, 이미지가 없으면 파드가 ImagePullBackOff 로 남습니다. |
+| **304-airflow** | `303-postgres` 의 Cluster 가 healthy 상태 | init Job 이 메타 DB 에 붙지 못해 대기 루프에서 재시도만 반복합니다. |
 | **306-cdc** | AP 노드의 Taint 제거 | Kafka Connect Pod 중 일부가 스케줄링되지 않고 `Pending` 상태로 남습니다. |
 | **307-pipeline** | `ingest` 노드 라벨 추가 (`kubectl label node s2 ingest=true`) | `tcp-socket-collector`가 실행될 노드를 찾지 못해 `Pending` 상태가 됩니다. |
 | **400-test-rdb** | 메모리 확보 (요청 합계 약 2.6Gi — 노드당 여유가 그만큼 나와야 합니다) | Oracle·SQL Server 파드가 `Pending` 으로 남습니다. 먼저 올릴 순서는 postgres → mysql → mssql → oracle 이며, 급하면 `oracle_sga_target`(기본 1536M)과 `mssql_memory_limit_mb`(기본 1024)를 낮춥니다. |
@@ -182,24 +283,24 @@ terraform -chdir=<스택> output         # 접속 주소 등 공개 값 확인
 
 ### **요약**
 >
-> `Terraform`은 `Kubernetes` 리소스를 배포하는 역할만 수행합니다.
+> `Terraform`/`Helm` 은 `Kubernetes` 리소스를 배포하는 역할만 수행합니다.
 > 운영체제 설정, 스토리지 준비, 데이터베이스 설치, `Kafka` 설치 등 **인프라 준비 작업은 모두 `Ansible`로 먼저 완료**해야 정상적으로 배포됩니다.
 
 ---
 </br>
 
-# 🔧 공통 설정 (versions.tf / providers.tf)
+# 🔧 Terraform 공통 설정 (versions.tf / providers.tf)
 버전과 접속 설정을 파일로 분리해 스택마다 동일한 동작을 보장합니다.
 - `required_version = "1.15.8"` → CLI 버전 고정 (범위 연산자 `>=`, `~>` 금지)
 - **리소스가 없는 프로바이더는 선언하지 않는다** → 스택마다 실제로 쓰는 것만 선언합니다.
 
 | 프로바이더 | 선언한 스택 | 이유 |
 |---|---|---|
-| `kubernetes 2.38.0` | 102 · 200 · 300~307 · 400 | 매니페스트를 직접 만드는 스택 |
+| `kubernetes 2.38.0` | 102 · 301~307 · 400 | 매니페스트를 직접 만드는 스택 (`300` 은 Helm 전환 완료로 제외) |
 | `helm 3.2.0` | 100 · 101 · 102 · 200 | 서드파티 차트를 쓰는 스택 |
 | `harbor 3.10.21` | 200 | Harbor API로 `data-layer` 프로젝트를 만드는 스택 |
 
-> `100-base`·`101-metallb`는 차트만 설치하므로 kubernetes 프로바이더가 **없습니다.**
+> `100-base`·`101-metallb`·`200-harbor`는 차트(+Harbor API)만 다루므로 kubernetes 프로바이더가 **없습니다.**
 
 ---
 </br>
@@ -224,26 +325,29 @@ terraform -chdir=<스택> output         # 접속 주소 등 공개 값 확인
 - **VIP(`ingress_vip`)는 `default`를 주지 않습니다.**
   - 네트워크 환경마다 달라지는 값이라 `terraform.tfvars`로 강제합니다(`102-ingress`, `305-api`).
 
+> **Helm 전환 스택은 같은 원칙을 Helm 문법으로 구현합니다** — 환경별 값은 `values.yaml`, 필수값·형식 강제는 `values.schema.json` (누락/오타 시 `helm template` 단계에서 즉시 오류).
+
 ---
 </br>
 
 # 🗂 스택 구성
 
-| 스택 | 역할 | 비고 |
-|------|------|------|
-| `100-base` | 쿠버네티스 기본 스토리지 구성 | Local Path, Longhorn 설치 (최초 1회) |
-| `101-metallb` | 온프렘 LoadBalancer 구현체 설치 | MetalLB 차트 (L2 모드, VIP 대역은 102 소유) |
-| `102-ingress` | 외부 접속 단일 진입점 구성 | VIP + ingress-nginx (Ingress 규칙은 각 앱 스택 소유) |
-| `200-harbor` | 컨테이너 이미지를 저장하는 사설 레지스트리 | Harbor (차트는 ClusterIP, 노출은 이 스택의 Ingress) |
-| `300-data-layer-base` | 데이터 레이어 공통 리소스 생성 | Namespace, ConfigMap, Secret, RBAC 구성 (애플리케이션 없음) |
-| `301-kafka-tools` | Kafka 운영 및 모니터링 도구 배포 | Schema Registry, Kafka UI, Exporter (브로커는 Ansible 설치) |
-| `302-monitoring` | 플랫폼 모니터링 환경 구성 | Alloy, Prometheus, Grafana |
-| `303-git` | Airflow DAG 저장소 운영 | Git 서버 및 Longhorn 볼륨 구성 |
-| `304-airflow` | 데이터 파이프라인 실행 환경 구성 | DAG는 Git Sync로 동기화, KubernetesExecutor 사용 |
-| `305-api` | 데이터 레이어 관리 API 배포 | 매퍼 제어 및 수집기 조회 API |
-| `306-cdc` | 운영 DB 변경 데이터 수집(CDC) | Kafka Connect(Debezium) |
-| `307-pipeline` | 실제 데이터 처리 파이프라인 실행 | Mapper, Consumer, Collector 등 워크로드 배포 |
-| `400-test-rdb` | CDC 소스 RDB 4종 (테스트 픽스처) | Oracle · SQL Server · PostgreSQL · MySQL. 스키마와 CDC 활성화까지 코드가 소유 |
+| 스택 | 도구 | 역할 | 비고 |
+|------|------|------|------|
+| `100-base` | Terraform | 쿠버네티스 기본 스토리지 구성 | Local Path, Longhorn 설치 (최초 1회) |
+| `101-metallb` | Terraform | 온프렘 LoadBalancer 구현체 설치 | MetalLB 차트 (L2 모드, VIP 대역은 102 소유) |
+| `102-ingress` | Terraform | 외부 접속 단일 진입점 구성 | VIP + ingress-nginx (Ingress 규칙은 각 앱 스택 소유) + PostgreSQL 외부 VIP 풀 |
+| `103-cnpg` | Terraform | PostgreSQL 오퍼레이터 설치 | CloudNativePG (CRD+오퍼레이터만 — Cluster CR 은 `303-postgres` 소유) |
+| `200-harbor` | Terraform | 컨테이너 이미지를 저장하는 사설 레지스트리 | Harbor (차트는 ClusterIP, 노출은 이 스택의 Ingress) |
+| `300-data-layer-base` | **Helm ✅** | 데이터 레이어 공통 리소스 생성 | Namespace, ConfigMap, Secret, RBAC 구성 (애플리케이션 없음) |
+| `301-kafka-tools` | **Helm ✅** | Kafka 운영 및 모니터링 도구 배포 | Schema Registry, Kafka UI, Exporter (브로커는 Ansible 설치) |
+| `302-monitoring` | **Helm ✅** | 플랫폼 모니터링 환경 구성 | Alloy, Prometheus, Grafana |
+| `303-postgres` | **Helm ✅** | 플랫폼 PostgreSQL (메타 DB 3종) | CNPG Cluster 3인스턴스 — 오퍼레이터·CRD 는 `103-cnpg`, 외부 VIP 는 `102-ingress` 소유 |
+| `304-airflow` | Terraform → Helm 예정 | 데이터 파이프라인 실행 환경 구성 | DAG 는 이미지에 포함, KubernetesExecutor 사용 |
+| `305-api` | Terraform → Helm 예정 | 데이터 레이어 관리 API 배포 | 매퍼 제어 및 수집기 조회 API |
+| `306-cdc` | Terraform → Helm 예정 | 운영 DB 변경 데이터 수집(CDC) | Kafka Connect(Debezium) |
+| `307-pipeline` | Terraform → Helm 예정 | 실제 데이터 처리 파이프라인 실행 | Mapper, Consumer, Collector 등 워크로드 배포 |
+| `400-test-rdb` | Terraform → Helm 예정 | CDC 소스 RDB 4종 (테스트 픽스처) | Oracle · SQL Server · PostgreSQL · MySQL. 스키마와 CDC 활성화까지 코드가 소유 |
 
 ---
 </br>
@@ -266,13 +370,13 @@ terraform -chdir=<스택> output         # 접속 주소 등 공개 값 확인
 | Grafana | 모니터링 대시보드 | http://data-layer-grafana | Ingress | `302-monitoring` |
 | Airflow | 데이터 파이프라인 관리 | http://data-layer-airflow | Ingress | `304-airflow` |
 | Data API | 데이터 레이어 API | http://data-layer-api | Ingress | `305-api` |
-| Git Server | Airflow DAG 저장소 | git://data-layer-git:30418/airflow.git | **NodePort** | `303-git` |
+| PostgreSQL | 플랫폼 메타 DB (DBeaver 등 외부 도구) | 192.168.56.241:5432 | **전용 VIP (LoadBalancer)** | `303-postgres` (VIP 풀은 `102-ingress`) |
 
-### ⚠️ Git Server만 NodePort로 남습니다
+### ⚠️ PostgreSQL 만 전용 VIP 를 씁니다 (NodePort 는 이제 없습니다)
 
-`git://`는 HTTP가 아니라 **Host 헤더가 없습니다.** 인그레스는 Host 헤더를 보고 갈라 보내므로 전제 자체가 성립하지 않습니다. (L4로 우회해도 포트가 하나 그대로 필요해서 얻는 것이 없습니다.)
+DB 프로토콜은 HTTP 가 아니라 **Host 헤더가 없어** 인그레스(L7)를 못 탑니다. NodePort 는 30000-32767 제약 때문에 표준 포트 5432 를 지킬 수 없어, MetalLB VIP 하나(`postgres-vip` 풀)를 따로 받아 `:5432` 그대로 엽니다. 장애 전환은 인그레스 VIP 와 같은 원리로 MetalLB 가 합니다. (구 303-git 의 NodePort 30418 은 스택 퇴역과 함께 사라져 **NodePort 는 더 이상 없습니다.**)
 
-### 📌 위 표에 DB가 없는 이유
+### 📌 위 표에 테스트 DB가 없는 이유
 
 `400-test-rdb`의 소스 DB 4종은 **외부에 열지 않습니다.** 접속하는 쪽(Kafka Connect·Airflow)이 전부 클러스터 안이라 Service 이름으로 충분합니다. 사람이 DB 클라이언트로 볼 때만 `kubectl port-forward`를 씁니다 → [400-test-rdb 스택](#-cdc-소스-rdb-스택-400-test-rdb--테스트-픽스처)
 
@@ -301,6 +405,7 @@ data-layer-harbor/data-layer/kafka-ui:v0.1.0
 - 호스트명을 변경할 경우 아래를 반드시 **같은 커밋**에서 함께 변경합니다.
   - 접속 정보 표 (이 표)
   - Terraform 각 스택 `variables.tf` 의 `<앱>_host`
+  - Helm 차트 `300-data-layer-base/values.yaml` 의 `<앱>Host` 미러 (`kafkaUiHost` · `airflowHost` · `grafanaHost`)
   - Ansible `host.yml` 의 `data_layer_vip_dns_names`
 - VIP를 변경할 경우 세 곳이 **글자 그대로** 같아야 합니다.
   - Terraform `102-ingress/terraform.tfvars` 의 `ingress_vip`
@@ -337,10 +442,11 @@ data-layer-harbor/data-layer/kafka-ui:v0.1.0
 |---|---|---|
 | `local-path` | Harbor Trivy 캐시 | 삭제되어도 다시 생성 가능한 임시 데이터 |
 | `local-path` | CDC 소스 RDB 4종 (`400-test-rdb`) | 테스트 데이터라 매일 01시 `cdc_seed_loader` DAG가 다시 채웁니다. 지켜야 할 원본이 없는데 Oracle 데이터파일(6.1G)을 2중 복제하면 랩 디스크만 소모합니다 |
-| `longhorn` | Harbor / Prometheus / Grafana / Git | 노드 장애 시에도 데이터를 유지해야 하는 서비스 데이터 |
+| `local-path` | 플랫폼 PostgreSQL (`303-postgres`) | 복제를 CNPG 가 앱 레벨(스트리밍 리플리케이션 3인스턴스)에서 합니다. longhorn 을 겹치면 3 × 2 = 6중 복제가 됩니다 |
+| `longhorn` | Harbor / Prometheus / Grafana | 노드 장애 시에도 데이터를 유지해야 하는 서비스 데이터 |
 
 ## 📌 Longhorn 적용 이유
-- Harbor, Prometheus, Grafana, Git은 자체 데이터 복제 기능이 없음
+- Harbor, Prometheus, Grafana는 자체 데이터 복제 기능이 없음
 - 특정 노드 장애 시 다른 노드에서 볼륨을 연결해 복구할 수 있도록 Longhorn 사용
 - 특히 **Harbor 장애는 전체 이미지 Pull 중단으로 이어질 수 있어 반드시 Longhorn 사용**
 
@@ -395,7 +501,7 @@ data-layer-harbor/data-layer/kafka-ui:v0.1.0
 - **스택을 나눈 이유는 취향이 아니라 제약**
   - `IPAddressPool` / `L2Advertisement`는 이 차트가 만드는 **CRD**
   - 같은 스택에 두면 첫 `plan`이 타입을 찾지 못하고 실패
-  - (`300` apply 후 `301` plan이 통과하는 것과 같은 형태)
+  - (`300` 배포(helm install) 후 `301` plan이 통과하는 것과 같은 형태)
 
 ---
 </br>
@@ -471,10 +577,11 @@ HTTP Registry 설정이 적용되지 않아 Pull이 실패함.
 ---
 </br>
 
-# 📜 공용 오브젝트 스택 (300-data-layer-base)
+# 📜 공용 오브젝트 스택 (300-data-layer-base) — ✅ Helm 차트
 
 > 데이터 레이어 전체에서 공통으로 사용하는 Kubernetes 리소스를 관리하는 스택입니다.  
-> **워크로드와 이미지는 배포하지 않습니다.**
+> **워크로드와 이미지는 배포하지 않습니다.**  
+> **Terraform 에서 Helm 차트로 전환된 첫 스택입니다** — `helm install/upgrade` 로 배포하며, 상세는 [300-data-layer-base/README.md](300-data-layer-base/README.md) 참조.
 
 ## 📌 구성
 | 리소스 | 역할 |
@@ -485,22 +592,25 @@ HTTP Registry 설정이 적용되지 않아 Pull이 실패함.
 | `ClusterRoleBinding` | 파드의 Kubernetes API 접근 권한 관리 |
 
 ## 📌 외부 설치 서비스
-Kafka, MinIO, PostgreSQL, Neo4j는 Terraform 관리 대상이 아닙니다.
+Kafka, MinIO, Neo4j는 이 차트의 관리 대상이 아닙니다.
 
 - Ansible로 노드에 설치
-- Terraform에서는 접속 정보만 생성
+- 이 차트는 `values.yaml` 의 `global.*` 값으로 접속 정보만 조립합니다
+- PostgreSQL 은 예외 — `303-postgres`(CNPG)로 K8s 에 있고, `global.postgresHost` 는
+  노드 주소가 아니라 CNPG rw Service FQDN 입니다 (303 의 `clusterName` 과 같은 커밋 규칙)
 
 ## 예시
 - KAFKA_BOOTSTRAP
 - MINIO_S3_ENDPOINT
-- COLLECTOR_DB_HOST
+- COLLECTOR_DB_HOST (→ CNPG rw Service)
 - PLATFORM_NEO4J_URI
 
 ## ⚠️ 운영 규칙
 - `301` 이후 스택은 ConfigMap/Secret을 생성하지 않고 참조만 합니다.
   - `envFrom: configMapRef / secretRef`
-- 동일 리소스를 여러 Terraform state에서 관리하면 서로 덮어쓸 수 있습니다.
-- 계정 및 접속 주소는 Ansible `host.yml`의 실제 설치 값과 반드시 동일해야 합니다.
+- 오브젝트 이름(계약)은 Terraform 시절과 동일합니다 — 참조하는 `301~307` 은 도구 전환의 영향을 받지 않습니다.
+- 값 변경은 `helm upgrade` 로만 합니다. `helm uninstall` 은 `data-layer` 네임스페이스째 삭제되므로 재설치가 아니라 **항상 upgrade** 입니다.
+- 계정 및 접속 주소는 Ansible `host.yml`의 실제 설치 값과 반드시 동일해야 합니다 (PostgreSQL 만 예외 — 303-postgres 가 기준).
 
 ---
 </br>
@@ -570,27 +680,30 @@ Kafka, MinIO, PostgreSQL, Neo4j는 Terraform 관리 대상이 아닙니다.
 ---
 </br>
 
-# 📜 저장소 스택 (303-git)
+# 📜 플랫폼 PostgreSQL 스택 (303-postgres) — Helm 차트
 
-> Airflow에서 사용하는 DAG 코드를 저장하는 Git 서버를 구성하는 스택입니다.
+> 플랫폼 메타 DB 3종(`airflow` / `data_layer` / `iceberg_catalog`)을 담는
+> CloudNativePG Cluster 를 구성하는 스택입니다. (구 303-git 자리 — git 스택은 퇴역)
 
 ## 📌 구성
-- 폐쇄망 환경이라 가벼운 `git daemon` 사용
-- 저장소:
-  - 경로: `/srv/git/airflow.git`
-  - 포트: `9418` (NodePort `30418` — `git://`는 HTTP가 아니라 Ingress로 옮길 수 없음)
-  - PVC: `2Gi` (Longhorn)
+- `Cluster` CR `data-layer-postgres` — 인스턴스 3 (primary 1 + replica 2, 노드 강제 분산)
+- 이미지: `postgres`(CNPG operand 16.14 + TimescaleDB 2.29.0 — `data_pipeline/data_layer_postgres/Dockerfile`)
+- 구 `initdb.d` 부트스트랩은 Cluster 스펙으로 승계:
+  - `bootstrap.initdb` + `postInitApplicationSQL` → `data_layer` DB · 스키마 · 테이블 · 하이퍼테이블
+  - `Database` CR 2개 → `airflow` · `iceberg_catalog`
+- 앱 계정 Secret(`data-layer-postgres-app-user`, basic-auth) + 메트릭 Service + 외부 VIP Service
 
 ## 📌 운영 방식
-- 노드 로컬 저장소가 아닌 Kubernetes 볼륨 사용
-  - 노드 장애 시에도 Longhorn 볼륨으로 복구 가능
-  - 파드는 Service 이름으로 Git 서버 접근 가능
+- 클러스터 안 소비자: `data-layer-postgres-rw.data-layer.svc.cluster.local:5432` (rw = 항상 현재 primary)
+- 클러스터 밖(DBeaver 등): `192.168.56.241:5432` (MetalLB 전용 VIP — 풀은 `102-ingress` 소유)
+- 초기화·복제·failover 의 수행 주체는 `103-cnpg` 의 오퍼레이터 — primary 파드가 죽으면 replica 가 승격됩니다
+- 스토리지는 `local-path` — 복제를 CNPG 가 하므로 longhorn 이중 복제를 피합니다
 
 ## ⚠️ 주의사항
-- PVC가 `RWO(ReadWriteOnce)`라 동시에 여러 파드가 붙을 수 없음
-  - Deployment 전략은 `Recreate` 사용
-- Terraform 적용 후 Ansible `local_git_ansible.yml`로 DAG 코드 등록 필요
-  - 코드가 없으면 Airflow `git-sync`가 초기화 단계에서 실패
+- `103-cnpg` apply + 이미지 2종 push 가 선행돼야 합니다 (`helm template` 은 CRD 검증을 안 하므로 통과해도 안심 금물)
+- **`helm uninstall` = Cluster 삭제 = PVC 까지 삭제(데이터 소실).** Database CR 삭제는 반대로 DB 를 지우지 않습니다(retain)
+- 계정/DB 이름은 `300-data-layer-base` values 와, VIP 는 `102-ingress` 와 같은 커밋 규칙입니다 (차트 README 참조)
+- 구 노드 로컬 PostgreSQL(Ansible, ap 의 systemd)은 퇴역 — 롤백 대비로 중지 상태로만 보존합니다
 
 ---
 </br>
@@ -607,9 +720,9 @@ Kafka, MinIO, PostgreSQL, Neo4j는 Terraform 관리 대상이 아닙니다.
 - DB 초기화 Job
 
 ## 📌 운영 방식
-- DAG 코드는 이미지에 포함하지 않음
-  - `303-git` 저장소의 코드를 `git-sync`로 가져와 사용
-  - DAG 경로: `/git/repo`
+- DAG·커스텀 패키지는 airflow 이미지에 포함 (`/opt/airflow/repo` — 선별 COPY, 시크릿 제외)
+  - 코드 반영 = 이미지 재빌드 → `image_tag` 변경 → 롤아웃
+  - 메타 DB 는 `303-postgres` 의 CNPG 클러스터 (`-rw` Service DNS)
 
 - 실행 방식: `KubernetesExecutor`
   - 작업(Task)마다 별도 Kubernetes Pod 생성
@@ -797,36 +910,27 @@ Airflow 커넥션 4종(`cdc_oracle`·`cdc_mssql`·`cdc_postgres`·`cdc_mysql`)�
 
 ---
 
-## 🔹 DAG는 이미지가 아니라 Git에서 관리한다 (303-git + git-sync)
+## 🔹 DAG는 airflow 이미지에 굽는다 (구 303-git + git-sync 퇴역)
 
 ```bash
-# DAG 수정 후 Git 반영
-cd /my_project/data_pipeline/data_layer_airflow
-vi dags/collector_dag.py
+# DAG 수정 후 반영 — 재빌드 → 태그 갱신 → apply
+cd /my_project/data_pipeline
+vi data_layer_airflow/dags/collector_dag.py
 
-git add -A
-git commit -m "fix: ..."
-git push
+./scripts/build_and_push.sh v0.2.1 airflow
+# 304-airflow/terraform.tfvars 의 image_tag 를 v0.2.1 로 수정
+terraform -chdir=304-airflow apply
 ```
-- `Airflow DAG`는 `Docker` 이미지에 포함되지 않고 **`Git` 저장소에서 가져온다**
-- DAG 수정은 git push만 하면 약 10초 후 반영된다
-- DAG 변경 때문에 이미지를 다시 만들 필요가 없다
-- 단, Python 패키지가 변경되는 requirements.txt 수정 시에는 이미지 재빌드 필요
-
-### 주의
-- Git 저장소는 303-git 파드가 제공한다
-- 303-git이 없으면 새 Airflow 파드는 DAG를 가져오지 못한다
-- 비밀번호, 키 같은 민감 정보는 Git이 아닌 Kubernetes Secret(airflow-env)에서 관리한다
+- DAG·커스텀 패키지는 airflow 이미지의 `/opt/airflow/repo` 에 있다 (선별 COPY 5종)
+- 이미지 하나가 곧 코드 버전 — 파서(dag-processor)와 태스크 파드가 다른 커밋을 볼 방법이 없다
+- 비밀번호, 키 같은 민감 정보는 이미지가 아니라 Kubernetes Secret(airflow-env)에서 관리한다
+  (`airflow.env`·`scripts/airflow.conf` 는 COPY 대상에서 제외 — Dockerfile 주석 참조)
 ---
 
 ## 🔹 Airflow Task는 Kubernetes 파드로 실행된다 (KubernetesExecutor)
 - `Airflow` 작업(`Task`)은 실행할 때마다 `Kubernetes` 파드로 생성된다
 - 성공한 `Task` 파드는 삭제된다
 - 실패한 `Task` 파드는 남겨서 `kubectl logs`로 장애 원인을 확인한다
-
-### 주의
-- Task 파드에는 git-sync를 initContainer로만 사용한다
-- 사이드카로 넣으면 git-sync가 계속 살아있어 Task 파드가 종료되지 않는다
 ---
 
 ## 🔹 실시간 수집기는 지정된 노드에 고정 배치한다
@@ -915,9 +1019,9 @@ Ingress
  ↓
 101 → 102        ← 101(CRD) 이 있어야 102 의 plan 이 통과한다
  ↓
-200
+200              ← 여기까지 플랫폼 (Terraform)
  ↓
-300
+300              ← 여기부터 워크로드 — 300 은 Helm 차트 (helm install)
  ↓
 301 ~ 307
  ↓
@@ -944,6 +1048,9 @@ Ingress
 100
 ```
 
+> `300-data-layer-base` 는 Helm 스택입니다 — 삭제는 `helm uninstall data-layer-base -n default`.
+> ⚠ uninstall 은 `data-layer` **네임스페이스째 삭제**하므로, 반드시 `301~400` 을 먼저 지운 뒤 실행합니다.
+
 ---
 
 
@@ -952,8 +1059,8 @@ Ingress
 ## 📌 운영 규칙
 - **모든 버전은 고정 관리**
   - 업그레이드는 버전 변경 커밋으로만 진행
-- **terraform apply / destroy는 엔지니어가 수행**
+- **terraform apply / destroy · helm install / upgrade / uninstall 은 엔지니어가 수행**
 - **`kubectl` 직접 수정 금지**
-  - `Terraform`과 `Kubernetes Server-Side Apply` 충돌 방지
+  - `Terraform`(Server-Side Apply 필드 소유권) / `Helm`(릴리스 매니페스트) 과의 충돌 방지
 
 ---
