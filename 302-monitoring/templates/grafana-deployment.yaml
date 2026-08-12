@@ -1,13 +1,14 @@
 # ===============================================
 # [Grafana Deployment]
-#   → Recreate 전략 고정: RWO 볼륨이라 RollingUpdate 로 새 파드를 먼저 띄우면 그 파드가
-#     다른 노드로 가는 순간 Multi-Attach 로 무한 대기한다(단일 인스턴스라 무중단이 목표도 아니다).
+#
+# Recreate 전략 고정: RWO 볼륨이라 RollingUpdate 로 새 파드를 먼저 띄우면 그 파드가
+# 다른 노드로 가는 순간 Multi-Attach 로 무한 대기한다(단일 인스턴스라 무중단이 목표도 아니다).
 # ===============================================
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: grafana
-  namespace: ${namespace}
+  namespace: {{ .Values.global.namespace }}
   labels:
     app: grafana
     app.kubernetes.io/name: grafana
@@ -35,11 +36,10 @@ spec:
         fsGroup: 472
       containers:
         - name: grafana
-          image: ${image}
+          image: {{ .Values.global.harborRegistry }}/data-layer/grafana:{{ .Values.imageTag }}
           imagePullPolicy: IfNotPresent
           # GF_* env(관리자 계정 + 익명 열람/임베드)는 전부 300-data-layer-base 의 공용
-          # ConfigMap/Secret 에서 온다. HTTP 환경이라 세션 쿠키(SameSite=None+Secure)를
-          # 못 써서 익명 열람이 유일한 임베드 경로이고, 권한 조정도 300 에서 한다.
+          # ConfigMap/Secret 에서 온다 — 계정/권한 조정도 300 에서 한다.
           envFrom:
             - configMapRef:
                 name: data-layer-env
@@ -47,7 +47,7 @@ spec:
                 name: data-layer-secrets
           ports:
             - name: http
-              containerPort: ${grafana_port}
+              containerPort: {{ .Values.grafana.port }}
           resources:
             requests:
               cpu: "100m"

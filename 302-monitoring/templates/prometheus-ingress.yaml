@@ -1,0 +1,31 @@
+# ===============================================
+# [Prometheus — 디버깅 UI 진입점]
+#
+# 타깃 상태/PromQL 을 사람이 직접 보는 경로 — 102-ingress 의 VIP 가 Host 헤더로 찾는다.
+#
+# [주의] 인증이 없다. 이 이름을 아는 사람은 전 메트릭을 조회할 수 있다(내부망 전제).
+#    노출면이 VIP 의 Host 헤더 하나로 좁아졌을 뿐 인증이 생긴 것은 아니다.
+# ===============================================
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: prometheus
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: prometheus
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/part-of: data-layer
+spec:
+  # 클래스를 빠뜨리면 어떤 컨트롤러도 집어 가지 않고 조용히 404 가 된다
+  ingressClassName: nginx
+  rules:
+    - host: {{ .Values.prometheus.host }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: prometheus
+                port:
+                  number: {{ .Values.prometheus.port }}

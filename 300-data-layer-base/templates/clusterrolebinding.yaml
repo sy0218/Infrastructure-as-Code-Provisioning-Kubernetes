@@ -1,24 +1,33 @@
 # ===============================================
-# [Kubernetes API 접근 권한]  (원본: permissions.tf)
-#   → data-layer 의 default SA 에 cluster-admin 을 주는, 저장소 유일의 권한 오브젝트다.
-#   → 없으면 prometheus kubernetes_sd 와 data-layer-api 가 403 을 받는데 파드는 정상 기동해 증상이 조용하다.
-#   → 대가로 이 네임스페이스의 전 파드가 관리자 권한을 갖는다(배경은 원본 CLAUDE.md '권한 모델').
-#   → 워크로드 차트는 serviceAccountName 을 쓰지 않는다(default SA 자동 적용) —
-#     ServiceAccount / Role / RoleBinding / ClusterRole 을 새로 만들지 말 것.
+# Kubernetes API 권한
+#
+# data-layer 네임스페이스의 default ServiceAccount에
+# cluster-admin 권한을 부여한다.
+#
+# 이 권한이 있으면 해당 네임스페이스의 모든 파드가
+#  Kubernetes 클러스터를 관리자 권한으로 접근할 수 있다.
+#
+# 워크로드는 별도 ServiceAccount를 지정하지 않고
+# default ServiceAccount를 사용한다.
 # ===============================================
+
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
+
 metadata:
-  # ClusterRoleBinding 은 클러스터 범위 리소스라 이름이 전역 유일해야 한다(namespace 필드 없음).
+  # ClusterRoleBinding 이름은 클러스터 전체에서 유일해야 한다.
   name: {{ .Values.global.namespace }}-default-admin
   labels:
     app.kubernetes.io/part-of: data-layer
+
 roleRef:
+  # 부여할 권한: 클러스터 관리자
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
   name: cluster-admin
+
 subjects:
-  # default SA 는 네임스페이스가 생겨야 컨트롤러가 만들어 준다
+  # data-layer 네임스페이스의 default ServiceAccount에 권한 부여
   - kind: ServiceAccount
     name: default
     namespace: {{ .Values.global.namespace }}

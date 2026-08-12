@@ -1,16 +1,21 @@
-data-layer 공용 오브젝트 배포 완료 — release {{ .Release.Name }} (chart {{ .Chart.Name }}-{{ .Chart.Version }})
+data-layer 공용 리소스 배포 완료
+Release: {{ .Release.Name }}
+Chart  : {{ .Chart.Name }}-{{ .Chart.Version }}
 
-  Namespace          : {{ .Values.global.namespace }}
-  ConfigMap          : data-layer-env       → 워크로드가 envFrom.configMapRef 로 통째로 주입
-  Secret             : data-layer-secrets   → 워크로드가 envFrom.secretRef 로 통째로 주입
-  ClusterRoleBinding : {{ .Values.global.namespace }}-default-admin (default SA → cluster-admin)
+생성된 리소스
+- Namespace          : {{ .Values.global.namespace }}
+- ConfigMap          : data-layer-env
+- Secret             : data-layer-secrets
+- ClusterRoleBinding : {{ .Values.global.namespace }}-default-admin
+  → default ServiceAccount에 cluster-admin 권한 부여
 
-확인:
-  kubectl get ns {{ .Values.global.namespace }}
-  kubectl -n {{ .Values.global.namespace }} get cm/data-layer-env secret/data-layer-secrets
+확인 방법
+kubectl get ns {{ .Values.global.namespace }}
+kubectl -n {{ .Values.global.namespace }} get cm data-layer-env secret data-layer-secrets
 
-주의:
-  - Kafka·MinIO·PostgreSQL·Neo4j 서버는 이 차트가 만들지 않는다 — 노드 로컬 설치(Ansible, ADR 0).
-    ConfigMap 의 접속값이 실제 설치 위치와 일치하는지 확인할 것.
-  - ConfigMap/Secret 을 kubectl 로 직접 고치지 말 것 — 값 변경은 values 수정 후
-    helm upgrade(단독 설치) 또는 git push + argocd sync(GitOps)로만 한다.
+주의사항
+- Kafka / MinIO / PostgreSQL / Neo4j는 이 차트에서 설치하지 않는다.
+  → 기존에 설치된 서버의 주소와 ConfigMap 설정이 맞는지 확인한다.
+
+- ConfigMap / Secret을 kubectl로 직접 수정하지 않는다.
+  → values.yaml 수정 후 Helm upgrade 또는 ArgoCD Sync로 배포한다.

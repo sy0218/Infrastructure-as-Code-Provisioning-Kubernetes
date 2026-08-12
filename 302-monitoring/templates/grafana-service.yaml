@@ -1,14 +1,15 @@
 # ===============================================
 # [Grafana Service]
-#   → 외부 노출은 Ingress 가 맡는다(grafana-ingress.yaml.tftpl) → 여기는 ClusterIP 로 충분하다.
-#   → 이 이름:포트는 두 방향이 함께 쓴다 — 인그레스 컨트롤러(브라우저·iframe 경로)와
-#     305-api 의 서버사이드 대시보드 목록 조회.
+#
+# 외부 노출은 Ingress 가 맡는다 → 여기는 ClusterIP 로 충분하다.
+# 이 이름:포트는 두 방향이 함께 쓴다 — 인그레스 컨트롤러(브라우저·iframe 경로)와
+# 305-api 의 서버사이드 대시보드 목록 조회.
 # ===============================================
 apiVersion: v1
 kind: Service
 metadata:
   name: grafana
-  namespace: ${namespace}
+  namespace: {{ .Values.global.namespace }}
   labels:
     app: grafana
     app.kubernetes.io/name: grafana
@@ -19,5 +20,5 @@ spec:
     app: grafana
   ports:
     - name: http
-      port: ${grafana_port}
+      port: {{ .Values.grafana.port }}
       targetPort: http

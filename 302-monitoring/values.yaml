@@ -1,0 +1,96 @@
+# ===============================================
+# [Monitoring Values]
+#
+# - 모니터링 스택의 설정값
+# - Alloy → 서버/컨테이너 메트릭 수집
+# - Prometheus → 메트릭 저장
+# - Grafana → 메트릭을 화면으로 보여줌
+# ===============================================
+global:
+
+  # Kubernetes Namespace
+  namespace: "data-layer"
+
+  # 모니터링 이미지를 가져올 Harbor 주소
+  harborRegistry: "data-layer-harbor:80"
+
+# 사용할 이미지 태그
+imageTag: "v0.1.0"
+
+
+# ===============================================
+# [Alloy]
+# - 각 Kubernetes 노드에 1개씩 실행된다. (데몬셋)
+# - 노드와 컨테이너의 메트릭을 수집해서 노출한다.
+# - Prometheus가 Alloy에서 메트릭을 가져간다.
+# ===============================================
+alloy:
+
+  # Alloy가 사용하는 포트
+  port: 12345
+
+  # 노드 메트릭을 제공하는 경로
+  nodeMetricsPath: "/api/v0/component/prometheus.exporter.unix.node/metrics"
+
+  # 컨테이너 메트릭을 제공하는 경로
+  cadvisorMetricsPath: "/api/v0/component/prometheus.exporter.cadvisor.containers/metrics"
+
+
+# ===============================================
+# [Prometheus]
+# - Alloy, PostgreSQL, Kafka 등의 메트릭을 수집한다.
+# - 수집한 메트릭을 저장하고 Grafana에 제공한다.
+# ===============================================
+prometheus:
+
+  # 메트릭을 얼마나 자주 수집할지
+  scrapeInterval: "30s"
+
+  # 메트릭 보관 기간
+  retention: "30d"
+
+  # Prometheus 데이터 저장공간
+  storageSize: "20Gi"
+
+  # 데이터를 저장할 StorageClass
+  storageClass: "longhorn"
+
+  # Prometheus 포트
+  port: 9090
+
+  # 브라우저에서 접속할 때 사용하는 호스트 이름
+  host: "data-layer-prometheus"
+
+  # 외부에서 실행 중인 Kafka의 JMX 메트릭 주소
+  kafkaJmxTargets:
+    - address: "192.168.56.200:9404"
+      node: "ap"
+      instance: "kafka-0"
+
+    - address: "192.168.56.201:9404"
+      node: "s1"
+      instance: "kafka-1"
+
+    - address: "192.168.56.202:9404"
+      node: "s2"
+      instance: "kafka-2"
+
+
+# ===============================================
+# [Grafana]
+# - Prometheus가 저장한 메트릭을 그래프로 보여준다.
+# - 브라우저에서 접속해서 모니터링 화면을 확인한다.
+# ===============================================
+grafana:
+
+  # Grafana 데이터 저장공간
+  storageSize: "5Gi"
+
+  # 데이터를 저장할 StorageClass
+  storageClass: "longhorn"
+
+  # Grafana 포트
+  port: 3000
+
+  # 브라우저에서 접속할 때 사용하는 호스트 이름
+  host: "data-layer-grafana"

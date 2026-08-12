@@ -1,90 +1,74 @@
 # ===============================================
-# [data-layer-base values — 단일 정의 지점]
-#   → 구 variables.tf default + terraform.tfvars + secrets.auto.tfvars 의 후계자.
-#   → 이 파일만으로 `helm template` 이 완전한 매니페스트를 렌더한다(랩 실측값).
-#   → 추후 ArgoCD app-of-apps 아래에서 배포되면 global.* 은 루트 values 가 덮어쓴다.
-#   → 필수 키·형식은 values.schema.json 이 렌더 시점에 강제한다
-#     (구 "환경 의존 변수는 default 없이 tfvars 강제" 규칙의 승계).
+# data-layer-base values
+#
+# - 로컬 환경에서 helm template 단독 렌더 가능
+# - ArgoCD app-of-apps 배포 시 global.* 덮어쓰기 가능
+# - 필수 값/형식은 values.schema.json으로 검증
 # ===============================================
 
 global:
-  # 데이터 레이어 네임스페이스 — 이 차트가 유일한 소유자다. 다른 스택은 이름으로 참조만 한다.
-  namespace: data-layer
+  # Kubernetes Namespace
+  namespace: "data-layer"
 
-  # 로컬 Kafka 브로커(ADR 0 — Ansible kafka 롤 설치) — host.yml kafka 그룹 노드 IP × 9092.
-  # 저장소 전체에서 브로커 주소의 유일한 정의 지점이다 — 301/306 은 공용 ConfigMap 을 참조한다.
+  # Kafka
   kafkaBootstrap: "192.168.56.200:9092,192.168.56.201:9092,192.168.56.202:9092"
 
-  # 로컬 데이터 스토어 — 브로커(ADR 0)와 같은 이유로 노드 로컬 설치(Ansible).
-  # 값은 실제 설치 위치와 일치해야 한다. 이 차트는 서버를 만들지 않고 접속값만 조립한다.
+  # External Data Stores (MinIO·Neo4j 는 노드 로컬 설치 — 노드 주소)
   minioEndpoint: "http://192.168.56.200:9000"
-  postgresHost: "192.168.56.200"
   neo4jBoltUri: "bolt://192.168.56.200:7687"
 
-  # 이 차트는 워크로드/이미지/Ingress 를 만들지 않는다 → harborRegistry / imageTag /
-  # ingressVip / ingressClassName 은 참조하지 않으며 기본값도 두지 않는다.
+  # PostgreSQL 은 303-postgres 의 CNPG 클러스터로 복귀 — 노드 IP 가 아니라 Service DNS.
+  # -rw 는 failover 후에도 항상 현재 primary 를 가리킨다(전환 주체가 오퍼레이터).
+  # [주의] 303-postgres 의 clusterName 이 이름의 원본이고, 304-airflow 의 postgres_host 와
+  #    같은 값이어야 한다 — 바꾸면 같은 커밋에서 함께 고친다.
+  postgresHost: "data-layer-postgres-rw.data-layer.svc.cluster.local"
 
-# MinIO·Neo4j 는 포트가 엔드포인트 문자열 안에 있어 값이 따로 없다. PostgreSQL 만
-# host 와 port 를 나눠 받는 이유는 libpq keyword DSN(host=... port=...)이 둘을 별도
-# 필드로 요구하기 때문. 표준 포트라 기본값을 둔다.
+# PostgreSQL Port
 postgresPort: 5432
 
-# ===============================================
-# [다른 스택이 소유한 값의 미러]
-#   → 공용 ConfigMap 의 *_URL 은 여기서 조립해야 하는데 소유 스택의 값을 못 읽는다.
-#   → ⚠ 여기 값을 바꿔도 Service·Ingress·containerPort 는 안 따라온다 — 소유 스택과 같은 커밋에서 고칠 것.
-#   → 이 차트가 실제로 조립에 쓰는 값만 미러한다.
-#   → 브라우저용 주소에 포트 미러가 없는 것은 의도다 — 인그레스가 VIP 의 80 하나로 받으므로
-#     URL 조립에 필요한 것은 호스트명뿐이다.
-# ===============================================
+# Other Stack References
+schemaRegistryPort: 9096 # 301-kafka-tools
+kafkaConnectPort: 8083   # 306-cdc
 
-# 아래 둘은 브라우저용이 아니라 클러스터 내부(Service DNS) 주소 조립용이다 —
-# SCHEMA_REGISTRY_URL · KAFKA_CONNECT_URL 이 이 값을 쓴다.
-schemaRegistryPort: 9096 # 301-kafka-tools 소유 — SCHEMA_REGISTRY_URL 조립용 미러 선언
-kafkaConnectPort: 8083 # 306-cdc(connect_rest_port) 소유 — KAFKA_CONNECT_URL 조립용 미러 선언
+kafkaUiHost: "data-layer-kafka-ui" # 301-kafka-tools
+airflowHost: "data-layer-airflow"  # 304-airflow
+grafanaHost: "data-layer-grafana"  # 302-monitoring
 
-kafkaUiHost: data-layer-kafka-ui # 301-kafka-tools 소유 — 바로가기 URL 조립용 미러 선언
-# ⚠ 304-airflow 의 AIRFLOW__API__BASE_URL 도 같은 이름으로 조립된다 — 여기만 바꾸면
-#   화면의 바로가기와 Airflow 의 로그인 리다이렉트가 서로 다른 곳을 가리킨다.
-airflowHost: data-layer-airflow # 304-airflow 소유 — 바로가기 URL 조립용 미러 선언
-# GRAFANA_URL 뿐 아니라 GF_SERVER_ROOT_URL(Grafana 자기 주소)과 305-api 의 hostAliases 도
-# 이 이름을 쓴다 — 셋이 같아야 iframe 임베드와 서버사이드 목록 조회가 함께 동작한다.
-grafanaHost: data-layer-grafana # 302-monitoring 소유 — 바로가기/임베드 URL 조립용 미러 선언
-
-# ===============================================
-# [공용 ConfigMap 중 환경 의존 값]
-# ===============================================
-
-collectorDbName: data_layer # 플랫폼/수집 메타 DB 이름 (PG DSN 3종이 공유)
-collectorDbSchema: data_pipeline # 수집 메타 테이블 스키마
-icebergCatalogDbName: iceberg_catalog # pyiceberg SqlCatalog 메타데이터 DB 이름
-# CDM 그래프 라벨 접두어 — 검증 단계는 Test(기존 그래프와 분리), 실서비스는 빈 값
+# Database / Application
+collectorDbName: "data_layer"
+collectorDbSchema: "data_pipeline"
+icebergCatalogDbName: "iceberg_catalog"
 graphLabelPrefix: "Test"
 
+
 # ===============================================
-# [시크릿 — Secret data-layer-secrets]
-#   → 구 secrets.auto.tfvars 의 후계자 — 공개 랩 전제(CLAUDE.md 시크릿 정책)라 평문 커밋.
-#   → ⚠ 실계정 전환 시 전제가 깨진다 — SealedSecrets/SOPS 로 교체하고 자격증명 전량 교체.
+# Secrets
+#
+# 개발/로컬 환경용 평문 설정
+# 운영 환경에서는 Secret 관리 도구 사용
 # ===============================================
+
 secrets:
-  # MinIO ROOT = S3 access/secret key — 로컬 MinIO 설치의 ROOT 계정과 같은 값
+  # MinIO
   minioRootUser: "data_layer"
   minioRootPassword: "data_layer123!"
 
-  # PostgreSQL — 로컬 설치의 슈퍼유저. PG DSN 3종 + Iceberg 카탈로그 URI 도 이 값으로 조립된다
+  # PostgreSQL
+  # [주의] 303-postgres 의 secrets.appUser/appPassword 와 같은 값이어야 한다
+  #    (CNPG 가 role 을 만들 때 쓰는 값과 소비자가 접속에 쓰는 값) — 같은 커밋 규칙.
   postgresUser: "data_layer"
   postgresPassword: "data_layer123!"
 
-  # collect_job.config 암호화 키(Fernet) — Airflow 쪽 COLLECTOR_CRYPTO_KEY 와 반드시 같은 값
+  # Airflow collect_job 암호화 키
   collectorCryptoKey: "u4_J9Xv9V0XmC_Y7B3V-J1oW7vL6wK2z8x3c4v5b6n7="
 
-  # data-layer-api /api/* 인증 키 (재발급: openssl rand -hex 32)
+  # data-layer-api 인증 키
   dataLayerApiKey: "b8f79dd470abff9e6b2c2de6b57f1f46081352f03aff4ce3bd1eb359cdbd1abf"
 
-  # Neo4j — 로컬 서버의 NEO4J_AUTH 와 클라이언트가 공유
+  # Neo4j
   platformNeo4jUser: "neo4j"
   platformNeo4jPassword: "datalayer-neo4j"
 
-  # Grafana 초기 관리자
+  # Grafana
   grafanaAdminUser: "admin"
   grafanaAdminPassword: "admin"

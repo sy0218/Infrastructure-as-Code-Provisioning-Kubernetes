@@ -1,49 +1,62 @@
-{{- /*
-===============================================
-[접속값 조립]  (원본: common-config.tf 의 locals)
-  → values 로 받은 원시 주소를 워크로드가 그대로 쓸 수 있는 URL/DSN 형태로 가공한다.
-  → 가공이 필요 없는 값(엔드포인트·호스트)은 아래 ConfigMap 에서 values 를 직접 참조한다.
-===============================================
-*/}}
-{{- /* 클러스터 내부 Service DNS 접미사 — 예: schema-registry.data-layer.svc.cluster.local */}}
+# ===============================================
+# [공용 ConfigMap]
+#
+# data-layer의 여러 서비스가 공통으로 사용하는 환경변수다.
+# 각 서비스는 이 ConfigMap을 envFrom으로 주입받는다.
+#
+# [주의] 여기의 변수명은 서비스 간 약속이므로
+#    이름을 변경하면 해당 변수를 사용하는 서비스도 같이 수정해야 한다.
+# ===============================================
+
+
+# ------------------------------------------------
+# 공통 URL / 접속 정보 생성
+# ------------------------------------------------
+
+# 클러스터 내부 Service DNS
+# 예: schema-registry.data-layer.svc.cluster.local
 {{- $svcSuffix := printf "%s.svc.cluster.local" .Values.global.namespace }}
-{{- /* bootstrap 목록의 각 host:port 에 PLAINTEXT:// 를 붙인 schema-registry 전용 형태 */}}
+
+# Kafka Bootstrap 주소에 PLAINTEXT:// 형식을 추가
 {{- $plaintextList := list }}
 {{- range splitList "," .Values.global.kafkaBootstrap }}
 {{- $plaintextList = append $plaintextList (printf "PLAINTEXT://%s" .) }}
 {{- end }}
 {{- $kafkaBootstrapPlaintext := join "," $plaintextList }}
-{{- /* 포트 소유자는 Service 를 만드는 각 차트다 — values.yaml 의 [다른 차트가 소유한 값의 미러] 참조 */}}
+
+# Schema Registry / Kafka Connect 접속 URL
+# 포트는 각각 해당 서비스 차트에서 관리한다.
 {{- $schemaRegistryUrl := printf "http://schema-registry.%s:%d" $svcSuffix (int .Values.schemaRegistryPort) }}
 {{- $kafkaConnectUrl := printf "http://cdc-connect.%s:%d" $svcSuffix (int .Values.kafkaConnectPort) }}
-{{- /* libpq keyword DSN — PLATFORM/LINEAGE/TCP_SOCKET 세 키가 같은 문자열을 공유한다 */}}
+
+# PostgreSQL 공통 접속 정보
 {{- $platformPgDsn := printf "host=%s port=%d dbname=%s user=%s password=%s" .Values.global.postgresHost (int .Values.postgresPort) .Values.collectorDbName .Values.secrets.postgresUser .Values.secrets.postgresPassword }}
-{{- /* pyiceberg SqlCatalog 용 SQLAlchemy URI — URI 형식이라 비밀번호의 특수문자가 구분자로 먹힌다.
-     urlquery(Go url.QueryEscape)는 원본 Terraform urlencode 와 같은 인코딩이다. */}}
+
+# Iceberg가 PostgreSQL Catalog에 접속할 때 사용하는 URL
 {{- $icebergCatalogUri := printf "postgresql+psycopg2://%s:%s@%s:%d/%s" .Values.secrets.postgresUser (urlquery .Values.secrets.postgresPassword) .Values.global.postgresHost (int .Values.postgresPort) .Values.icebergCatalogDbName }}
-# ===============================================
-# [공용 ConfigMap — data-layer-env]  (원본: common-config.tf)
-#   → 다른 차트 워크로드가 envFrom.configMapRef 로 통째로 주입받는, 비밀이 아닌 설정값 전부.
-#   → 키 이름이 곧 차트 간 계약이다 — 이름을 바꾸면 참조하는 워크로드가 조용히 빈 값을 받는다.
-#   → kubectl 로 직접 고치지 말 것 — 값 변경은 반드시 이 차트의 values 를 고쳐 sync 한다.
-# ===============================================
+
+
 apiVersion: v1
 kind: ConfigMap
+
 metadata:
   name: data-layer-env
   namespace: {{ .Values.global.namespace }}
   labels:
     app.kubernetes.io/part-of: data-layer
+
 data:
-  # Kafka / Schema Registry / Connect
-  # kafka-tools 는 브로커 주소를 재계산하지 않고 KAFKA_BOOTSTRAP_PLAINTEXT 를 configMapKeyRef 로 읽는다.
+
+  # Kafka / Schema Registry / Kafka Connect
   KAFKA_BOOTSTRAP: {{ .Values.global.kafkaBootstrap | quote }}
   KAFKA_BOOTSTRAP_PLAINTEXT: {{ $kafkaBootstrapPlaintext | quote }}
   SCHEMA_REGISTRY_URL: {{ $schemaRegistryUrl | quote }}
   KAFKA_CONNECT_URL: {{ $kafkaConnectUrl | quote }}
   KAFKA_UI_CLUSTER_NAME: "kraft-cluster"
 
-  # Kafka Topic
+
+  # Kafka Topic 이름
+  # → Producer / Consumer가 동일한 Topic을 사용하기 위한 공통 설정
   CDM_TOPIC: "cdm-topic"
   CDM_DLQ_TOPIC: "dlq-cdm-topic"
   CDM_CONSUMER_RDB_DLQ_TOPIC: "dlq-cdm-consumer-rdb"
@@ -53,7 +66,9 @@ data:
   LINEAGE_TOPIC: "lineage-topic"
   LINEAGE_DLQ_TOPIC: "dlq-lineage"
 
-  # Object Storage / Iceberg
+
+  # MinIO / Iceberg
+  # → 객체 저장소와 Iceberg Catalog 접속 정보
   CDM_OBJSTORE_ENDPOINT: {{ .Values.global.minioEndpoint | quote }}
   CDM_OBJSTORE_BUCKET: "config"
   MINIO_S3_ENDPOINT: {{ .Values.global.minioEndpoint | quote }}
@@ -62,7 +77,9 @@ data:
   ICEBERG_CATALOG_URI: {{ $icebergCatalogUri | quote }}
   ICEBERG_CATALOG_DB_NAME: {{ .Values.icebergCatalogDbName | quote }}
 
+
   # PostgreSQL
+  # → 여러 서비스가 공통으로 사용하는 DB 접속 정보
   PLATFORM_PG_DSN: {{ $platformPgDsn | quote }}
   LINEAGE_PG_DSN: {{ $platformPgDsn | quote }}
   TCP_SOCKET_PG_DSN: {{ $platformPgDsn | quote }}
@@ -71,23 +88,29 @@ data:
   COLLECTOR_DB_NAME: {{ .Values.collectorDbName | quote }}
   COLLECTOR_DB_SCHEMA: {{ .Values.collectorDbSchema | quote }}
 
+
   # Neo4j
+  # → Graph 관련 서비스의 DB 접속 정보
   PLATFORM_NEO4J_URI: {{ .Values.global.neo4jBoltUri | quote }}
   PLATFORM_NEO4J_DATABASE: "neo4j"
   GRAPH_LABEL_PREFIX: {{ .Values.graphLabelPrefix | quote }}
 
-  # UI 바로가기 (브라우저 접근용 Ingress 주소 — 호스트명 소유자는 각 앱 차트)
-  # 포트가 없는 것은 인그레스가 VIP 의 80 을 쓰기 때문이다. 이 이름들은 각 차트
-  # Ingress 의 host 와 글자 그대로 같아야 한다 — 어긋나면 화면의 바로가기만 조용히 죽는다.
+
+  # UI 주소
+  # → 브라우저에서 접근하는 각 서비스의 Ingress 주소
+  # → Ingress가 80 포트를 사용하므로 URL에 별도 포트를 넣지 않는다.
   KAFKA_UI_URL: {{ printf "http://%s" .Values.kafkaUiHost | quote }}
   AIRFLOW_UI_URL: {{ printf "http://%s" .Values.airflowHost | quote }}
   GRAFANA_URL: {{ printf "http://%s" .Values.grafanaHost | quote }}
+
 
   # Data Quality
   DATA_QUALITY_MAPPER_PREFIX: "cdm-mapper"
   DATA_QUALITY_RESTART_DRAIN_TIMEOUT: "180"
 
-  # Mapper / Consumer / Lineage 설정
+
+  # Mapper / Consumer / Lineage
+  # → 각 작업의 로그 레벨, Batch 크기, Kafka Consumer Group 등의 실행 설정
   CDM_MAPPER_LOG_LEVEL: "INFO"
   CDM_WORK_BATCH_SIZE: "500"
   CDM_WORK_BATCH_TIME: "60.0"
@@ -113,7 +136,9 @@ data:
   LINEAGE_BATCH_SIZE: "500"
   LINEAGE_BATCH_TIME: "60.0"
 
+
   # TCP Socket Collector
+  # → TCP 데이터를 받는 Collector의 실행 설정
   TCP_SOCKET_BIND: "0.0.0.0"
   TCP_SOCKET_ORIGIN: "socket.tcp"
   TCP_SOCKET_DLQ_TOPIC: "dlq.raw"
@@ -123,17 +148,21 @@ data:
   TCP_SOCKET_STATS_INTERVAL: "60"
   TCP_SOCKET_REFRESH_INTERVAL: "5"
   TCP_SOCKET_LOG_LEVEL: "INFO"
-  # 컨테이너 이름이 아니라 라벨 셀렉터(app=tcp-socket-collector) 의미
+
+  # Collector Pod를 찾기 위한 Kubernetes Label Selector
   TCP_SOCKET_CONTAINER: "tcp-socket-collector"
 
+
   # Grafana Embed
+  # → 다른 화면에서 Grafana를 iframe으로 표시하기 위한 설정
   GF_SECURITY_ALLOW_EMBEDDING: "true"
   GF_AUTH_ANONYMOUS_ENABLED: "true"
   GF_AUTH_ANONYMOUS_ORG_ROLE: "Editor"
-  # Grafana 가 리다이렉트·절대 URL 을 만들 때 쓰는 자기 주소. 호스트 기반 인그레스라
-  # 없어도 대체로 동작하지만, 없으면 Grafana 는 자기 주소를 localhost:3000 으로 가정해
-  # 일부 리다이렉트가 파드 안쪽을 가리킨다 → GRAFANA_URL 과 같은 값을 명시한다.
+
+  # Grafana가 생성하는 리다이렉트/절대 URL의 기준 주소
+  # → GRAFANA_URL과 동일한 주소를 사용한다.
   GF_SERVER_ROOT_URL: {{ printf "http://%s" .Values.grafanaHost | quote }}
+
 
   # Airflow
   AIRFLOW_UID: "50000"
