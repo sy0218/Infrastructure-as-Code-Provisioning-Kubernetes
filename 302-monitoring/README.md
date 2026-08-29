@@ -42,8 +42,8 @@ alloy·prometheus 이미지는 `FROM` 한 줄(Harbor 경유 목적)이라, 설�
 - `imageTag` — `build_and_push.sh` 에 넘긴 값과 같은 불변 태그.
 - `alloy.*MetricsPath` — config.alloy 컴포넌트 이름과 결합된 경로. Prometheus 스크랩 경로와
   alloy readinessProbe 가 같은 값 하나를 보므로, 컴포넌트 이름을 바꾸면 여기도 같이 바꾼다.
-- `prometheus.kafkaJmxTargets` — 브로커는 클러스터 밖(노드 로컬 설치)이라 자동 발견이 안 되는
-  유일한 static 타깃. Ansible `host.yml` kafka 그룹(노드 IP:9404)과 일치해야 한다.
+- kafka-jmx 잡은 파드 라벨 `app=kafka` + 포트 이름 `metrics` 로 301-kafka 브로커 파드(:9404)를 발견한다
+  — static 타깃도, 복사본 값도 없다(instance = 파드 이름 kafka-N).
 - `values.schema.json` 이 필수 키·형식(호스트명 밑줄 금지, host:port 형식 등)을 렌더 시점에
   강제한다 — 구 "환경 의존 변수는 default 없이 tfvars 강제" 규칙의 승계.
 - 값 변경 = values 수정 → `helm upgrade`(추후에는 git push + argocd sync). kubectl 직접 수정 금지.

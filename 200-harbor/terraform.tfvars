@@ -1,7 +1,6 @@
 # ===============================================
-# [환경별 설정]
-#   → 이 스택이 받는 값 전체를 여기 모아 둔다
-#   → 비밀번호 등 시크릿은 여기가 아니라 secrets.auto.tfvars 로 넣는다.
+#  [ terraform.tfvars ]
+#    - variables.tf 에서 정의한 변수에 실제 값을 지정
 # ===============================================
 
 # Kubernetes 클러스터에 접속할 때 사용할 kubeconfig 파일 경로
@@ -31,14 +30,20 @@ harbor_chart_version = "1.18.4"
 # ===============================================
 harbor_host = "data-layer-harbor"
 
-# Ingress 레이어 전송 대기 상한(초) → 느린 랩에서 레이어 하나가 기본값 60초를 쉽게 넘긴다
+# Ingress 레이어 전송 대기 상한(초)
 harbor_proxy_timeout = "600"
 
-# Registry PVC 크기 → longhorn replica 2 라 실제 디스크는 2배를 먹는다(30Gi → 60Gi)
+# Registry PVC 크기
 harbor_registry_storage_size = "30Gi"
 
-# registry/database/redis/jobservice 4개 PVC 의 StorageClass
-harbor_storage_class = "longhorn"
+# registry/database/redis/jobservice/trivy 5개 PVC 의 StorageClass
+harbor_storage_class = "local-path"
 
 # Harbor 내부 컴포넌트 PVC 크기
 harbor_component_storage_size = "2Gi"
+
+# Harbor 컴포넌트 7 개를 전부 올릴 노드 (kubectl get nodes 의 NAME)
+harbor_node_name = "s1"
+
+# Trivy 취약점 DB 캐시 PVC 크기 (차트 기본값과 동일)
+harbor_trivy_storage_size = "5Gi"

@@ -9,11 +9,11 @@
 # ===============================================
 
 # 소비하는 공용 값이 바뀌면 checksum 이 바뀌어 롤아웃된다.
-# 계산 원본은 values 의 복사본(global.kafkaBootstrap)과 이 차트 소유의 포트 —
-# SCHEMA_REGISTRY_URL 조립식은 300-data-layer-base 의 ConfigMap 과 같다.
+# 계산 원본은 이 차트가 소유한 값 — 브로커 주소(kafka.name 에서 조립, _helpers.tpl)와
+# 포트. SCHEMA_REGISTRY_URL 조립식은 300-data-layer-base 의 ConfigMap 과 같다.
 {{- $svcSuffix := printf "%s.svc.cluster.local" .Values.global.namespace }}
 {{- $schemaRegistryUrl := printf "http://schema-registry.%s:%d" $svcSuffix (int .Values.schemaRegistryPort) }}
-{{- $configHash := printf "%s|%s" .Values.global.kafkaBootstrap $schemaRegistryUrl | sha256sum }}
+{{- $configHash := printf "%s|%s" (include "kafka.bootstrap" .) $schemaRegistryUrl | sha256sum }}
 
 apiVersion: apps/v1
 kind: Deployment

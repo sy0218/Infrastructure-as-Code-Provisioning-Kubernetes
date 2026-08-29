@@ -32,7 +32,7 @@
         },
         "kafkaBootstrap": {
           "type": "string",
-          "description": "쉼표 구분 host:port 목록 — Ansible host.yml kafka 그룹과 일치 (호스트에 콜론 금지 → PLAINTEXT:// 접두사 실수를 렌더 시점에 차단)",
+          "description": "쉼표 구분 host:port 목록 — 301-kafka 의 bootstrap Service FQDN(<kafka.name>.<ns>.svc.cluster.local:<ports.client>)과 일치 (호스트에 콜론 금지 → PLAINTEXT:// 접두사 실수를 렌더 시점에 차단)",
           "pattern": "^[^,\\s:]+:[0-9]+(,[^,\\s:]+:[0-9]+)*$"
         },
         "minioEndpoint": {

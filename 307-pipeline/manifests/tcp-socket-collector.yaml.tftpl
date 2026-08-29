@@ -44,7 +44,8 @@ spec:
       # ===============================================
       hostNetwork: true
       # hostNetwork 파드는 노드의 resolv.conf 를 써서 클러스터 DNS 를 잃는다.
-      # schema-registry 등 svc DNS 주소를 부르므로 이 줄이 필요하다(PG·Kafka 는 노드 IP 라 무관).
+      # KAFKA_BOOTSTRAP(Strimzi bootstrap)·COLLECTOR_DB_HOST(CNPG rw)·schema-registry 가 전부 svc DNS 라
+      # 이 줄이 없으면 수집기가 브로커도 DB 도 이름을 못 풀어 기동조차 못 한다.
       dnsPolicy: ClusterFirstWithHostNet
       # 뜰 노드를 좁히는 이유와 라벨 값의 출처는 variables.tf 의 tcp_socket_node_selector
       nodeSelector: ${node_selector}

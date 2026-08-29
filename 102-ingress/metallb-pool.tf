@@ -1,29 +1,28 @@
 # ===============================================
 # [MetalLB VIP 설정]
 #
-# → ingress-nginx가 사용할 VIP 주소를 MetalLB에 등록한다.
-# → IPAddressPool : "이 VIP를 사용할 수 있다"라고 등록
-# → L2Advertisement : "이 VIP를 네트워크에 광고"하도록 설정
+# MetalLB가 외부에서 사용할 VIP를 관리하도록 설정한다.
 #
-# → 101-metallb는 MetalLB 기능(CRD/Controller)을 설치한다.
-# → 이 스택은 실제로 사용할 VIP 주소와 광고 설정을 관리한다.
+# IPAddressPool       → 사용할 VIP 주소를 등록한다.
+# L2Advertisement     → 등록한 VIP를 네트워크에 ARP로 광고한다.
+#
+# ingress-nginx용 VIP와 PostgreSQL용 VIP를
+# 각각 별도의 Pool로 관리한다.
 # ===============================================
 
 locals {
-
-  # IPAddressPool과 L2Advertisement가 같은 Pool을 사용하도록 이름을 한 곳에서 관리한다.
+  # ingress-nginx가 사용할 VIP Pool 이름
   ip_pool_name = "ingress-vip"
 
-  # PostgreSQL 외부 접속용 VIP 풀 — 303-postgres 의 -external Service 가 요청한다.
+  # PostgreSQL 외부 접속에 사용할 VIP Pool 이름
   postgres_pool_name = "postgres-vip"
 }
 
-# ===============================================
-# [VIP 주소 등록]
-# ===============================================
 
+# -----------------------------------------------
+# [Ingress VIP 등록]
+# -----------------------------------------------
 # → MetalLB에게 ingress-nginx가 사용할 VIP를 알려준다.
-# → 예: 192.168.56.240
 resource "kubernetes_manifest" "ingress_vip_pool" {
   manifest = yamldecode(templatefile("${path.module}/manifests/ipaddresspool.yaml.tftpl", {
     metallb_namespace = var.metallb_namespace
@@ -32,10 +31,9 @@ resource "kubernetes_manifest" "ingress_vip_pool" {
   }))
 }
 
-# ===============================================
-# [VIP L2 광고]
-# ===============================================
-
+# -----------------------------------------------
+# [Ingress VIP 네트워크 광고]
+# -----------------------------------------------
 # → 등록한 VIP를 L2(ARP) 방식으로 네트워크에 광고한다.
 # → MetalLB가 현재 VIP를 가진 노드의 네트워크 인터페이스에서
 #   해당 VIP에 대한 ARP 응답을 하도록 만든다.
@@ -49,14 +47,21 @@ resource "kubernetes_manifest" "ingress_vip_l2advertisement" {
   depends_on = [kubernetes_manifest.ingress_vip_pool]
 }
 
-# ===============================================
+# -----------------------------------------------
 # [PostgreSQL 외부 접속 VIP]
+# -----------------------------------------------
 #
-# → 인그레스(L7, Host 헤더)를 못 타는 TCP 서비스라 전용 VIP 를 쓴다.
-#   NodePort 는 30000-32767 제약 때문에 표준 포트 5432 를 못 지킨다.
-# → VIP 대역의 소유자는 이 스택이고, 요청자는 303-postgres 의
-#   <clusterName>-external Service(metallb.io/loadBalancerIPs 어노테이션)다.
-# ===============================================
+# PostgreSQL은 HTTP/HTTPS가 아닌 TCP 서비스이므로
+# Ingress를 거치지 않고 전용 VIP로 직접 접속한다.
+#
+# 외부 클라이언트 → PostgreSQL VIP:5432
+#
+# NodePort 대신 LoadBalancer(VIP)를 사용해
+# 표준 PostgreSQL 포트 5432로 접속할 수 있도록 한다.
+#
+# 303-postgres의 External Service가
+# 이 VIP Pool에서 IP를 요청한다.
+# -----------------------------------------------
 
 resource "kubernetes_manifest" "postgres_vip_pool" {
   manifest = yamldecode(templatefile("${path.module}/manifests/ipaddresspool.yaml.tftpl", {
@@ -66,11 +71,17 @@ resource "kubernetes_manifest" "postgres_vip_pool" {
   }))
 }
 
+# -----------------------------------------------
+# [PostgreSQL VIP 네트워크 광고]
+# -----------------------------------------------
+# PostgreSQL VIP도 L2(ARP) 방식으로 네트워크에 광고한다.
+
 resource "kubernetes_manifest" "postgres_vip_l2advertisement" {
   manifest = yamldecode(templatefile("${path.module}/manifests/l2advertisement.yaml.tftpl", {
     metallb_namespace = var.metallb_namespace
     pool_name         = local.postgres_pool_name
   }))
 
+  # PostgreSQL VIP Pool 생성 후 광고 설정을 적용한다.
   depends_on = [kubernetes_manifest.postgres_vip_pool]
 }

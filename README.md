@@ -60,8 +60,8 @@ Infrastructure as Code(IaC) 기반으로 **클러스터 위의 애플리케이�
 | Provider | kubernetes `2.38.0` / helm `3.2.0` / harbor `3.10.21` |
 | Helm 차트 | local-path `0.0.37` / longhorn `1.11.3` / metallb `0.16.1` / ingress-nginx `4.15.1` / harbor `1.18.4` / cloudnative-pg `0.29.0` |
 | Cluster Access | ~/.kube/config (cluster-admin) |
-| 선행 조건 (Ansible) | Kubernetes / Longhorn Prerequisites / etc_hosts / Kafka / MinIO / Neo4j (PostgreSQL 롤은 퇴역 — `303-postgres` 가 승계) |
-| 선행 조건 (Manual) | 이미지 21종 Build & Push (`build_and_push.sh`) |
+| 선행 조건 (Ansible) | Kubernetes / Longhorn Prerequisites / etc_hosts / Kafka Prerequisites(노드 디렉토리) / MinIO / Neo4j (Kafka·PostgreSQL 설치 롤은 퇴역 — `301-kafka`·`303-postgres` 가 승계) |
+| 선행 조건 (Manual) | 이미지 22종 Build & Push (`build_and_push.sh` — kafka 브로커 이미지 포함) |
 
 ---
 </br>
@@ -79,7 +79,7 @@ Infrastructure-as-Code-Terraform.kubernetes/
 │
 │ # ── 애플리케이션 워크로드 (Helm 차트 + ArgoCD 예정 · ✅ = 전환 완료) ──
 ├── 300-data-layer-base/    # ✅ 데이터 레이어 공통 리소스 (Namespace, ConfigMap, Secret, RBAC)
-├── 301-kafka-tools/        # ✅ Kafka 운영 도구 (Schema Registry, Kafka UI, Exporter)
+├── 301-kafka/              # ✅ Kafka 클러스터 (StatefulSet — hostNetwork + 노드 로컬 디스크) + 운영 도구 (Schema Registry, Kafka UI, Exporter)
 ├── 302-monitoring/         # ✅ 모니터링 (Alloy, Prometheus, Grafana)
 ├── 303-postgres/           # ✅ 플랫폼 PostgreSQL (CNPG Cluster 3인스턴스 — 구 303-git 자리)
 ├── 304-airflow/            # Airflow 워크플로우 엔진
@@ -92,7 +92,7 @@ Infrastructure-as-Code-Terraform.kubernetes/
 ## 각 디렉토리의 의미
 - **하나의 번호 디렉토리 = 하나의 서비스(스택)** — 독립적으로 배포/삭제할 수 있습니다.
 - **Terraform 스택**(100~200, 301~400 중 전환 전 스택)은 자신만의 Terraform State 를 가지며, 다른 스택과 State 를 공유하지 않습니다.
-- **Helm 차트 스택**(현재 `300-data-layer-base` · `301-kafka-tools` · `302-monitoring` · `303-postgres`)은 자신만의 Helm 릴리스로 관리됩니다.
+- **Helm 차트 스택**(현재 `300-data-layer-base` · `301-kafka` · `302-monitoring` · `303-postgres`)은 자신만의 Helm 릴리스로 관리됩니다.
 - 스택 간 실행 순서는 **디렉토리 번호(100 → 200 → 300 …)** 로 관리합니다.
   - ArgoCD 도입 후에는 이 번호 순서를 **sync-wave** 가 대체할 예정입니다.
 
@@ -216,9 +216,10 @@ helm install data-layer-base ./300-data-layer-base -n default
 #   (--create-namespace 금지: 차트의 Namespace 오브젝트와 소유권이 충돌합니다)
 #   값 변경은 helm upgrade 로만 합니다 — uninstall 은 네임스페이스째 지워 301~400 의 모든 워크로드가 같이 사라집니다
 
-# 301 은 Helm 전환 완료 — Kafka 운영 도구
-helm template kafka-tools ./301-kafka-tools                # 배포 전 미리보기
-helm install kafka-tools ./301-kafka-tools -n data-layer
+# 301 — Kafka 클러스터(StatefulSet, hostNetwork) + 운영 도구. 전제: Ansible kafka_prereq + 노드 포트 9092~9094/9404 비어 있음
+helm template kafka ./301-kafka                            # 배포 전 미리보기
+helm install kafka ./301-kafka -n data-layer               # 토픽 Job(hook)까지 끝나야 돌아온다 (수 분)
+# ↑ 값 변경은 helm upgrade — 단 updateStrategy 가 OnDelete 라 브로커 파드는 사람이 한 대씩 지워 반영한다(301 README)
 
 # 302 는 Helm 전환 완료 — 모니터링 (Alloy/Prometheus/Grafana)
 helm template monitoring ./302-monitoring                  # 배포 전 미리보기
@@ -271,7 +272,7 @@ helm template <릴리스> <차트 디렉토리> | kubectl diff -f -   # 배포 �
 | **100-base** | `longhorn_prereq` Ansible 실행 (open-iscsi, multipath, `/data/longhorn` 생성) | Longhorn 스토리지가 정상적으로 생성되지 않아 PVC 연결(Attach)에 실패합니다. |
 | **102-ingress** | VIP(`192.168.56.240`)가 노드망에서 비어 있는지 확인 + VirtualBox host-only 어댑터 무차별 모드 허용 | VIP에 ARP 응답이 오지 않아 접속이 되지 않습니다(파드는 정상이라 원인 추적이 어렵습니다). |
 | **인그레스 서비스 전체** | `etc_hosts` Ansible 재실행 (`--tags etc_hosts`) + 접속하는 PC의 hosts 파일 수정 | 이름이 VIP로 풀리지 않아 Grafana·Airflow·API 등이 전부 접속 불가가 됩니다. |
-| **301-kafka-tools** | `kafka_ansible.yml` 실행하여 Kafka Broker 설치 | Schema Registry, Kafka UI 등이 Kafka에 연결하지 못합니다. |
+| **301-kafka** | `kafka_prereq` Ansible 실행(노드마다 `/data/kafka-broker`·`/data/kafka-controller`, root:root 2770) + 노드 포트 9092/9093/9094/9404 비어 있을 것(hostNetwork) + `kafka` 이미지 push | 디렉토리가 없으면 브로커 파드가 마운트 실패로 Pending, 포트가 잡혀 있으면 브로커가 바인드 실패로 CrashLoopBackOff, 이미지가 없으면 ImagePullBackOff 로 남습니다. |
 | **애플리케이션 스택 전체** | MinIO, Neo4j Ansible 실행 (PostgreSQL 은 `303-postgres` 가 담당) | 데이터 저장소가 없어 애플리케이션이 계속 재시작됩니다. |
 | **303-postgres** | `103-cnpg` apply + 이미지 2종(`postgres`·`cloudnative-pg`) push | CRD 가 없으면 install 이 "no matches for kind Cluster" 로 죽고, 이미지가 없으면 파드가 ImagePullBackOff 로 남습니다. |
 | **304-airflow** | `303-postgres` 의 Cluster 가 healthy 상태 | init Job 이 메타 DB 에 붙지 못해 대기 루프에서 재시도만 반복합니다. |
@@ -284,7 +285,7 @@ helm template <릴리스> <차트 디렉토리> | kubectl diff -f -   # 배포 �
 ### **요약**
 >
 > `Terraform`/`Helm` 은 `Kubernetes` 리소스를 배포하는 역할만 수행합니다.
-> 운영체제 설정, 스토리지 준비, 데이터베이스 설치, `Kafka` 설치 등 **인프라 준비 작업은 모두 `Ansible`로 먼저 완료**해야 정상적으로 배포됩니다.
+> 운영체제 설정, 스토리지 준비, 노드 디렉토리(Longhorn·Kafka), MinIO·Neo4j 설치 등 **인프라 준비 작업은 모두 `Ansible`로 먼저 완료**해야 정상적으로 배포됩니다. (Kafka·PostgreSQL 서버 자체는 K8s 안 — `301-kafka`·`303-postgres`)
 
 ---
 </br>
@@ -340,7 +341,7 @@ helm template <릴리스> <차트 디렉토리> | kubectl diff -f -   # 배포 �
 | `103-cnpg` | Terraform | PostgreSQL 오퍼레이터 설치 | CloudNativePG (CRD+오퍼레이터만 — Cluster CR 은 `303-postgres` 소유) |
 | `200-harbor` | Terraform | 컨테이너 이미지를 저장하는 사설 레지스트리 | Harbor (차트는 ClusterIP, 노출은 이 스택의 Ingress) |
 | `300-data-layer-base` | **Helm ✅** | 데이터 레이어 공통 리소스 생성 | Namespace, ConfigMap, Secret, RBAC 구성 (애플리케이션 없음) |
-| `301-kafka-tools` | **Helm ✅** | Kafka 운영 및 모니터링 도구 배포 | Schema Registry, Kafka UI, Exporter (브로커는 Ansible 설치) |
+| `301-kafka` | **Helm ✅** | Kafka 클러스터 + 운영 도구 | StatefulSet 3 (KRaft 겸용, hostNetwork, 노드 로컬 디스크) + 토픽 Job 16 + Schema Registry, Kafka UI, Exporter — 오퍼레이터 없음 |
 | `302-monitoring` | **Helm ✅** | 플랫폼 모니터링 환경 구성 | Alloy, Prometheus, Grafana |
 | `303-postgres` | **Helm ✅** | 플랫폼 PostgreSQL (메타 DB 3종) | CNPG Cluster 3인스턴스 — 오퍼레이터·CRD 는 `103-cnpg`, 외부 VIP 는 `102-ingress` 소유 |
 | `304-airflow` | Terraform → Helm 예정 | 데이터 파이프라인 실행 환경 구성 | DAG 는 이미지에 포함, KubernetesExecutor 사용 |
@@ -365,16 +366,19 @@ helm template <릴리스> <차트 디렉토리> | kubectl diff -f -   # 배포 �
 | 서비스 | 용도 | 접속 주소 | 노출 방식 | 스택 |
 |---|---|---|---|---|
 | Harbor | 컨테이너 이미지 저장소 | http://data-layer-harbor | Ingress | `200-harbor` |
-| Kafka UI | Kafka 상태 확인 및 관리 | http://data-layer-kafka-ui | Ingress | `301-kafka-tools` |
+| Kafka UI | Kafka 상태 확인 및 관리 | http://data-layer-kafka-ui | Ingress | `301-kafka` |
 | Prometheus | 메트릭 수집/조회 | http://data-layer-prometheus | Ingress | `302-monitoring` |
 | Grafana | 모니터링 대시보드 | http://data-layer-grafana | Ingress | `302-monitoring` |
 | Airflow | 데이터 파이프라인 관리 | http://data-layer-airflow | Ingress | `304-airflow` |
 | Data API | 데이터 레이어 API | http://data-layer-api | Ingress | `305-api` |
 | PostgreSQL | 플랫폼 메타 DB (DBeaver 등 외부 도구) | 192.168.56.241:5432 | **전용 VIP (LoadBalancer)** | `303-postgres` (VIP 풀은 `102-ingress`) |
+| Kafka | 외부 프로듀서/컨슈머 (클러스터 밖 PC·장비) | 192.168.0.38:9092,192.168.0.39:9092,192.168.0.40:9092 | **hostNetwork (노드 IP 직결)** | `301-kafka` (`kafka.nodes`) |
 
-### ⚠️ PostgreSQL 만 전용 VIP 를 씁니다 (NodePort 는 이제 없습니다)
+### ⚠️ 비-HTTP 둘 — PostgreSQL 은 전용 VIP, Kafka 는 hostNetwork
 
-DB 프로토콜은 HTTP 가 아니라 **Host 헤더가 없어** 인그레스(L7)를 못 탑니다. NodePort 는 30000-32767 제약 때문에 표준 포트 5432 를 지킬 수 없어, MetalLB VIP 하나(`postgres-vip` 풀)를 따로 받아 `:5432` 그대로 엽니다. 장애 전환은 인그레스 VIP 와 같은 원리로 MetalLB 가 합니다. (구 303-git 의 NodePort 30418 은 스택 퇴역과 함께 사라져 **NodePort 는 더 이상 없습니다.**)
+DB 프로토콜은 HTTP 가 아니라 **Host 헤더가 없어** 인그레스(L7)를 못 탑니다. NodePort 는 30000-32767 제약 때문에 표준 포트 5432 를 지킬 수 없어, MetalLB VIP 하나(`postgres-vip` 풀)를 따로 받아 `:5432` 그대로 엽니다. 장애 전환은 인그레스 VIP 와 같은 원리로 MetalLB 가 합니다. (구 303-git 의 NodePort 30418 은 스택 퇴역과 함께 사라졌습니다.)
+
+Kafka 는 **hostNetwork** 입니다. 브로커는 노드에 박힌 인프라(노드 로컬 디스크)라 파드 IP 가 곧 노드 IP 이고, 브로커가 광고하는 주소도 노드 IP:9092 입니다 — 클러스터 안팎이 같은 주소로 붙고 DNAT 이 없습니다. Kafka 클라이언트는 bootstrap 뒤 브로커가 광고한 주소로 다시 접속하므로 브로커마다 주소가 필요한데, VIP 로 하면 4개가 들고 VIP 를 든 노드와 브로커 노드가 다르면 홉이 하나 더 생깁니다. 장애 전환은 Kafka 클라이언트가 브로커 목록으로 합니다. 외부에서는 `--bootstrap-server 192.168.0.38:9092,192.168.0.39:9092,192.168.0.40:9092` 로 붙습니다. 클러스터 안 워크로드는 공용 ConfigMap 의 `KAFKA_BOOTSTRAP`(Service DNS `kafka.data-layer.svc.cluster.local:9092` — readiness 통과한 브로커만)을 씁니다.
 
 ### 📌 위 표에 테스트 DB가 없는 이유
 
@@ -615,34 +619,42 @@ Kafka, MinIO, Neo4j는 이 차트의 관리 대상이 아닙니다.
 ---
 </br>
 
-# 📜 Kafka 도구 스택 (301-kafka-tools)
+# 📜 Kafka 스택 (301-kafka) — Helm 차트
 
-> Kafka 브로커를 관리 / 모니터링하기 위한 주변 도구를 배포하는 스택입니다.  
-> **Kafka 브로커 자체는 설치하지 않습니다.**
+> Kafka 클러스터(StatefulSet)와 운영 도구를 함께 배포하는 스택입니다. (구 `301-kafka-tools` 개명·통합 — 구 Ansible systemd 설치를 K8s 로 옮긴 것)
+> 오퍼레이터를 쓰지 않습니다. 네임스페이스는 `300-data-layer-base`, 노드 디렉토리는 Ansible `kafka_prereq` 가 소유합니다.
 
 ## 📌 구성
-| 구성 요소 | 역할 | 포트 |
+| 구성 요소 | 역할 | 비고 |
 |---|---|---|
+| `StatefulSet kafka` ×3 | Kafka KRaft 브로커(앞 3개는 controller 겸용) | **hostNetwork** — 노드 IP:9092(클라이언트)/9093/9094, JMX 9404 |
+| `Service kafka` / `kafka-hl` | 클러스터 안 bootstrap / STS headless | `kafka.data-layer.svc.cluster.local:9092` (공용 ConfigMap `KAFKA_BOOTSTRAP`) |
+| `StorageClass kafka-local` + `PV` ×6 | 정적 local PV (노드 × data/metadata) | `/data/kafka-broker` 10Gi · `/data/kafka-controller` 2Gi — `claimRef` 로 kafka-N ↔ nodes[N] 고정 |
+| `ConfigMap kafka-config` / `kafka-jmx-exporter` | server.properties 템플릿 / JMX 룰 | 파드별 값(node.id·roles·광고 IP)은 기동 스크립트가 채움 |
+| `Job kafka-topics` (helm hook) | 파이프라인 계약 토픽 16개 | `--if-not-exists` 멱등, 파티션 3 / RF 3 |
 | `Schema Registry` | Kafka 스키마 관리 | `9096` |
 | `Kafka UI` | Kafka 상태 확인 및 관리 | `9095` (외부는 Ingress — 포트 없음) |
-| `Kafka Exporter` | Kafka 메트릭 수집 | `9097` |
+| `Kafka Exporter` | 토픽/오프셋/Lag 메트릭 | `9097` |
+
+## 📌 설계 원칙 — 장애는 쿠버네티스가 아니라 Kafka 복제로 대응한다
+- 브로커 ID = 파드 ordinal = `values.yaml` 의 `kafka.nodes` 표 인덱스. PV 가 PVC 이름에 미리 묶여 있어(`claimRef`) `kafka-N` 은 표의 N번 노드에만 뜹니다.
+- 노드가 죽으면 그 파드는 **다른 노드로 옮겨지지 않습니다** — Node 를 지운 뒤 재생성되는 파드는 PV 가 없어 Pending 에 멈춥니다. 쿠버네티스가 빈 디스크로 "복구"하지 않습니다.
+- 남은 브로커 2대(RF 3)가 서비스를 잇고, 복구는 사람이 표를 고쳐 같은 ID 를 새 노드에서 띄웁니다 → [301-kafka/README.md '노드 장애'](./301-kafka/README.md#노드-장애)
+- `updateStrategy: OnDelete` — 설정/이미지를 바꿔도 파드가 저절로 재기동되지 않습니다. 사람이 한 대씩 지우며 복제 상태(URP 0)를 확인합니다.
+- Strimzi 를 쓰지 않는 이유: `hostNetwork` 를 지원하지 않아 외부 접속이 NodePort 로 갈라지고, 운영 편의(롤링·토픽 CR)보다 노드 직결·단순성을 택했습니다.
 
 ## 📌 Kafka 연결 정보 관리
-- 브로커 주소는 `tfvars`에 직접 입력하지 않습니다.
-- `300-data-layer-base`에서 생성한 공용 ConfigMap을 참조합니다.
-- 공통 설정을 사용하므로 스택 간 Kafka 주소 불일치가 발생하지 않습니다.
+- 브로커 주소의 **원본은 이 차트의 `kafka.name`** → `kafka.data-layer.svc.cluster.local:9092` (클러스터 안), 노드 IP:9092 (클러스터 밖)
+- `300-data-layer-base` 의 `global.kafkaBootstrap` 이 그 복사본이고, 워크로드는 공용 ConfigMap `KAFKA_BOOTSTRAP` 으로 받습니다. 바꿀 때는 같은 커밋에서.
+- 노드 IP(`kafka.nodes[].ip`)는 Ansible `host.yml` 과 같아야 합니다 — `controller.quorum.voters` 와 광고 주소가 여기서 나옵니다.
 
 ## ⚠️ 배포 순서
-1. Kafka 브로커 설치
-   - Ansible `kafka_ansible.yml`
-2. 공용 리소스 생성
-   - `300-data-layer-base`
-3. Kafka 도구 배포
-   - `301-kafka-tools`
+1. Ansible `kafka_prereq` (노드 디렉토리 2종, 2770) → 2. `kafka` 이미지 push (`build_and_push.sh`) → 3. `300-data-layer-base` → 4. `301-kafka`
 
 ## ⚠️ 주의사항
-- `300-data-layer-base`가 먼저 적용되어 있어야 `301-kafka-tools` 실행 가능
-- Kafka 브로커가 정상 실행 중이어야 Schema Registry, Kafka UI, Exporter가 연결 가능
+- 노드 포트 9092/9093/9094/9404 는 브로커가 그대로 점유합니다(hostNetwork) — 다른 프로세스와 겹치면 CrashLoopBackOff.
+- 파티션 수는 운영 중 바꾸지 않습니다(키 해시 분배가 깨짐). `kafka.clusterId` 를 바꾸면 기존 디스크와 충돌합니다.
+- 노드를 늘리거나 교체할 때 `kafka.nodes` 에 넣기 **전에** `kafka_prereq` 가 그 노드에 디렉토리를 만들어야 합니다. 증설은 표 뒤에 붙이고 축소는 뒤에서 뺍니다(StatefulSet ordinal).
 
 ---
 </br>
@@ -670,9 +682,9 @@ Kafka, MinIO, Neo4j는 이 차트의 관리 대상이 아닙니다.
   - 대시보드 변경 정보와 DB만 저장
 
 ## ⚠️ 주의사항
-- Kafka 브로커는 Kubernetes 리소스가 아니므로 자동 탐색 불가
-  - JMX Exporter(`9404`)를 통해 수집
-  - 대상 주소는 Ansible 설정과 동일해야 함
+- Kafka 브로커/컨트롤러 JMX 메트릭은 `301-kafka` 파드의 `:9404`(`tcp-prometheus`)를 `kubernetes_sd` 로 발견해 수집
+  - keep 기준은 파드 라벨 `app=kafka` + 포트 이름 `metrics` — 복사본 값 없음(instance = 파드 이름 kafka-N)
+  - static 타깃은 더 이상 없음
 - Alloy는 노드 네트워크를 직접 사용
   - `alloy_port(12345)`는 노드 포트
   - 다른 서비스와 포트가 겹치면 실행 실패

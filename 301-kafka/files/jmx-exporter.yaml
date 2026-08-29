@@ -1,0 +1,66 @@
+# Kafka 브로커 JMX → Prometheus 매핑 (브로커 파드의 jmx_prometheus_javaagent 가 읽는다 — KAFKA_OPTS 로 활성화).
+#
+# 원본: data_pipeline/data_layer_kafka/jmx_exporter.yaml (compose·로컬 설치 시절) — 규칙은 그대로이고
+#   whitelistObjectNames 만 현재 이름 includeObjectNames 로 바꿨다(jmx_exporter 1.x —
+#   옛 이름도 호환 별칭으로 받지만 '지양'이라 새 이름을 쓴다). 운영 원본은 이제 이 파일이다.
+#
+# hostPort/jmxUrl 을 두지 않는다 — 에이전트는 브로커와 같은 JVM 안에서 로컬 MBeanServer 를 읽는다.
+# 노출 포트(9404)와 활성화는 StatefulSet 의 KAFKA_OPTS(-javaagent)가 한다 — 여기엔 룰만 있다.
+ssl: false
+lowercaseOutputName: true
+lowercaseOutputLabelNames: true
+
+# 대시보드가 쓰는 빈만 포함 (도메인 와일드카드는 파티션·버전마다 폭발).
+# "type=X,name=*" 는 집계 빈만 매칭(per-topic 자동 제외), RequestMetrics 만 ",*" 로 request= 포함.
+includeObjectNames:
+  # 공통
+  - "kafka.controller:type=KafkaController,name=*"
+  - "kafka.controller:type=ControllerEventManager,name=*"
+  - "kafka.server:type=ReplicaManager,name=*"
+  - "kafka.server:type=BrokerTopicMetrics,name=*"
+  - "kafka.network:type=RequestMetrics,name=TotalTimeMs,*"
+  # KRaft 메타데이터
+  - "kafka.server:type=MetadataLoader,name=*"
+  # 브로커 JVM GC/힙 — 룰이 있어야 실제로 수출된다 (아래 java.lang 룰과 세트)
+  - "java.lang:type=GarbageCollector,*"
+  - "java.lang:type=Memory"
+
+rules:
+  # Percentile (라벨 1개 + quantile) — 라벨 있는 규칙을 먼저 둬야 흡수 안 됨
+  - pattern: 'kafka.(\w+)<type=(.+), name=(.+), (.+)=(.+)><>(\d+)thPercentile'
+    name: kafka_$1_$2_$3
+    type: GAUGE
+    labels:
+      "$4": "$5"
+      quantile: "0.$6"
+  # Percentile (라벨 없음)
+  - pattern: 'kafka.(\w+)<type=(.+), name=(.+)><>(\d+)thPercentile'
+    name: kafka_$1_$2_$3
+    type: GAUGE
+    labels:
+      quantile: "0.$4"
+  # Count/Value (라벨 1개)
+  - pattern: 'kafka.(\w+)<type=(.+), name=(.+), (.+)=(.+)><>(Count|Value)'
+    name: kafka_$1_$2_$3
+    type: GAUGE
+    labels:
+      "$4": "$5"
+  # Count/Value (라벨 없음)
+  - pattern: 'kafka.(\w+)<type=(.+), name=(.+)><>(Count|Value)'
+    name: kafka_$1_$2_$3
+    type: GAUGE
+
+  # 브로커 JVM GC/힙 — java.lang 도메인이라 위 kafka 룰과 충돌 없음
+  - pattern: 'java.lang<name=(.+), type=GarbageCollector><>(CollectionCount|CollectionTime)'
+    name: jvm_gc_$2
+    type: GAUGE
+    labels:
+      gc: "$1"
+  - pattern: 'java.lang<type=GarbageCollector, name=(.+)><>(CollectionCount|CollectionTime)'
+    name: jvm_gc_$2
+    type: GAUGE
+    labels:
+      gc: "$1"
+  - pattern: 'java.lang<type=Memory><(Heap|NonHeap)MemoryUsage>(used|committed|max)'
+    name: jvm_memory_$1_$2
+    type: GAUGE

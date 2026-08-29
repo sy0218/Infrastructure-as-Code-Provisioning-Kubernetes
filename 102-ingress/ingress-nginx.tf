@@ -1,12 +1,18 @@
 # ===============================================
-# [ingress-nginx → HTTP 진입점]
+# [ingress-nginx]
 #
-# → 브라우저 요청을 받아 각 Kubernetes Service로 전달한다.
-# → 사용자는 VIP 하나만 접속하면 된다.
-# → 서비스가 늘어나도 외부에서 사용하는 포트는 그대로다.
+# Kubernetes 클러스터의 HTTP/HTTPS 진입점이다.
 #
-# → Ingress 리소스는 각 애플리케이션 스택에서 관리한다.
-# → 여기서는 ingress-nginx 자체만 설치한다.
+# 외부 사용자는 Ingress VIP로 접속하고,
+# ingress-nginx는 요청의 도메인과 경로에 따라
+# 적절한 Kubernetes Service로 요청을 전달한다.
+#
+# 예)
+# example.com/api → api-service
+# example.com/web → web-service
+#
+# Ingress 리소스는 각 애플리케이션 서비스에서 관리하고,
+# 이 스택에서는 ingress-nginx Controller만 설치한다.
 # ===============================================
 
 resource "helm_release" "ingress_nginx" {
@@ -20,36 +26,35 @@ resource "helm_release" "ingress_nginx" {
 
   values = [yamlencode({
     controller = {
+
+      # Ingress Controller Pod 개수
       replicaCount = var.ingress_replicas
 
-      # ===============================================
+      # -----------------------------------------------
       # [Ingress 외부 접속]
-      # ===============================================
+      # -----------------------------------------------
 
       service = {
-        # → MetalLB가 VIP를 할당할 수 있도록 LoadBalancer로 생성한다.
+        # MetalLB가 VIP를 할당할 수 있도록 Service를 LoadBalancer로 생성한다.
         type = "LoadBalancer"
 
-        # → MetalLB에 사용할 VIP를 지정한다.
-        # → 별도로 만든 IPAddressPool의 VIP와 동일해야 한다.
+        # MetalLB가 이 Service에 사용할 VIP를 지정한다.
         annotations = {
           "metallb.io/loadBalancerIPs" = var.ingress_vip
         }
 
-        # → 클라이언트의 원래 IP를 보존한다.
-        # → MetalLB L2에서도 실제 Ingress 파드가 있는 노드만
-        #   VIP를 광고하도록 한다.
+        # 실제 Ingress Controller가 실행 중인 노드에서 외부 트래픽을 처리하도록 한다.
         externalTrafficPolicy = "Local"
       }
 
-      # ===============================================
+      # -----------------------------------------------
       # [파드 노드 분산]
-      # ===============================================
+      # -----------------------------------------------
 
-      # → Ingress 파드가 같은 노드에 몰리지 않도록 한다.
-      # → 노드 하나가 장애나도 다른 노드의 Ingress가 요청을 처리한다.
       affinity = {
         podAntiAffinity = {
+          # 동일한 Ingress Controller Pod가 하나의 노드에 함께 배치되지 않도록 한다.
+          # 노드 장애 시 다른 노드의 Ingress Controller가 계속 요청을 처리할 수 있다.
           requiredDuringSchedulingIgnoredDuringExecution = [{
             labelSelector = {
               matchLabels = {
@@ -63,11 +68,10 @@ resource "helm_release" "ingress_nginx" {
         }
       }
 
-      # ===============================================
+      # -----------------------------------------------
       # [리소스]
-      # ===============================================
-
-      # → 랩 환경에서 필요한 최소한의 CPU/메모리만 예약한다.
+      # -----------------------------------------------
+      # Ingress Controller가 사용할 최소 리소스를 예약한다.
       resources = {
         requests = {
           cpu    = "50m"
@@ -77,11 +81,7 @@ resource "helm_release" "ingress_nginx" {
     }
   })]
 
-  # → ingress-nginx를 설치하기 전에
-  #   MetalLB의 VIP Pool과 L2 광고 설정이 먼저 있어야 한다.
-  #
-  # → 이것들이 없으면 LoadBalancer Service가 VIP를 받지 못해
-  #   Helm 설치가 timeout으로 실패할 수 있다.
+  # LoadBalancer Service가 VIP를 할당받을 수 있도록 MetalLB의 IP Pool과 L2 광고 설정을 먼저 생성한다.
   depends_on = [
     kubernetes_manifest.ingress_vip_pool,
     kubernetes_manifest.ingress_vip_l2advertisement

@@ -1,13 +1,30 @@
 # ===============================================
 # [CloudNativePG Operator]
-#   - CNPG = PostgreSQL을 자동으로 관리해주는 Kubernetes Operator
-#   - 이 스택은 Operator와 CNPG CRD만 설치한다.
-#   - PostgreSQL 자체는 이 스택에서 만들지 않는다.
+#   - Kubernetes에서 PostgreSQL 클러스터를 자동으로 운영하기 위한
+#   - CloudNativePG(CNPG) Operator를 설치한다.
 #
-# [전체 흐름]
-#   1. 이 스택 → CNPG Operator + CRD 설치
-#   2. 303-postgres → Cluster CR 생성
-#   3. CNPG Operator → PostgreSQL 생성/복제/failover 등 관리
+# 이 스택에서는 "PostgreSQL 서버"를 직접 생성하지 않는다.
+# Operator와 CRD만 설치하고,
+# 실제 PostgreSQL 클러스터는 별도의 303-postgres 스택에서 생성한다.
+#
+# [구성 흐름]
+#
+#   1. 이 스택
+#      └─ CNPG Operator 설치
+#      └─ CNPG CRD 설치
+#
+#   2. 303-postgres
+#      └─ CNPG Cluster 리소스 생성
+#
+#   3. CNPG Operator
+#      └─ Cluster 리소스를 감시
+#      └─ PostgreSQL Pod 생성
+#      └─ 복제/Failover 등 PostgreSQL 운영 관리
+#
+# 즉,
+#   Terraform/Helm → Operator 설치
+#   Kubernetes CR  → PostgreSQL 클러스터 선언
+#   CNPG Operator  → 실제 PostgreSQL 운영
 # ===============================================
 
 resource "helm_release" "cloudnative_pg" {
@@ -20,27 +37,16 @@ resource "helm_release" "cloudnative_pg" {
   timeout          = 600
 
   values = [yamlencode({
-
-    # ===========================================
-    # [Operator 이미지]
-    #   - 실제로 실행되는 CNPG Operator 이미지
-    #   - 노드는 Harbor에서 이미지를 가져온다.
-    # ===========================================
-    image = {
-      repository = "${var.harbor_registry}/data-layer/cloudnative-pg"
-      tag        = var.operator_image_tag
-    }
-
     # CNPG가 사용하는 CRD(Cluster, Database, Pooler 등) 설치
     crds = {
       create = true
     }
 
-    # ===========================================
+    # -------------------------------------------
     # [모니터링]
-    #   - Prometheus/Grafana는 별도 monitoring 스택이 관리한다.
+    #   - 모니터링은 monitoring 스택이 관리한다.
     #   - CNPG는 PodMonitor/Grafana Dashboard를 만들지 않는다.
-    # ===========================================
+    # -------------------------------------------
     monitoring = {
       podMonitorEnabled = false
       grafanaDashboard = {

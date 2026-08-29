@@ -1,40 +1,42 @@
 # ===============================================
-# data-layer-base values
+# [ values.yaml ]
+#   - data-layer-base values
 #
-# - 로컬 환경에서 helm template 단독 렌더 가능
-# - ArgoCD app-of-apps 배포 시 global.* 덮어쓰기 가능
-# - 필수 값/형식은 values.schema.json으로 검증
+# → data-layer 워크로드 에서 공통으로 사용하는 기본 설정
 # ===============================================
 
 global:
-  # Kubernetes Namespace
+  # Kubernetes dasta-layer Namespace
   namespace: "data-layer"
 
-  # Kafka
-  kafkaBootstrap: "192.168.56.200:9092,192.168.56.201:9092,192.168.56.202:9092"
+  # Kafka Broker 접속 주소 — 301-kafka 의 StatefulSet(hostNetwork). 브로커는 노드 IP:9092 로 광고하지만
+  # bootstrap 은 Service DNS 로 둔다 — 노드 IP 를 여기 복사하지 않고, readiness 통과한 브로커만 엔드포인트가 된다.
+  # 클라이언트는 bootstrap 뒤 브로커가 광고한 노드 IP 로 직접 붙는다(DNAT 없음).
+  # [주의] 301-kafka 의 kafka.name(bootstrap Service 이름) · kafka.ports.client 가 이 값의 원본이다
+  #    — 바꾸면 같은 커밋에서 함께 고친다.
+  kafkaBootstrap: "kafka.data-layer.svc.cluster.local:9092"
 
-  # External Data Stores (MinIO·Neo4j 는 노드 로컬 설치 — 노드 주소)
-  minioEndpoint: "http://192.168.56.200:9000"
-  neo4jBoltUri: "bolt://192.168.56.200:7687"
+  # 데이터 저장소 접속 주소
+  minioEndpoint: "http://192.168.0.38:9000"
+  neo4jBoltUri: "bolt://192.168.0.38:7687"
 
-  # PostgreSQL 은 303-postgres 의 CNPG 클러스터로 복귀 — 노드 IP 가 아니라 Service DNS.
-  # -rw 는 failover 후에도 항상 현재 primary 를 가리킨다(전환 주체가 오퍼레이터).
-  # [주의] 303-postgres 의 clusterName 이 이름의 원본이고, 304-airflow 의 postgres_host 와
-  #    같은 값이어야 한다 — 바꾸면 같은 커밋에서 함께 고친다.
+  # PostgreSQL 접속 주소
+  # CNPG Service DNS를 사용하며, failover 시 현재 Primary로 자동 연결
   postgresHost: "data-layer-postgres-rw.data-layer.svc.cluster.local"
 
 # PostgreSQL Port
 postgresPort: 5432
 
-# Other Stack References
-schemaRegistryPort: 9096 # 301-kafka-tools
+# 다른 스택과 통신하기 위한 Port
+schemaRegistryPort: 9096 # 301-kafka
 kafkaConnectPort: 8083   # 306-cdc
 
-kafkaUiHost: "data-layer-kafka-ui" # 301-kafka-tools
+# Ingress Host
+kafkaUiHost: "data-layer-kafka-ui" # 301-kafka
 airflowHost: "data-layer-airflow"  # 304-airflow
 grafanaHost: "data-layer-grafana"  # 302-monitoring
 
-# Database / Application
+# 데이터베이스 / 애플리케이션 기본 설정
 collectorDbName: "data_layer"
 collectorDbSchema: "data_pipeline"
 icebergCatalogDbName: "iceberg_catalog"
@@ -43,19 +45,15 @@ graphLabelPrefix: "Test"
 
 # ===============================================
 # Secrets
-#
-# 개발/로컬 환경용 평문 설정
-# 운영 환경에서는 Secret 관리 도구 사용
 # ===============================================
 
 secrets:
-  # MinIO
+  # MinIO 인증 정보
   minioRootUser: "data_layer"
   minioRootPassword: "data_layer123!"
 
-  # PostgreSQL
-  # [주의] 303-postgres 의 secrets.appUser/appPassword 와 같은 값이어야 한다
-  #    (CNPG 가 role 을 만들 때 쓰는 값과 소비자가 접속에 쓰는 값) — 같은 커밋 규칙.
+  # PostgreSQL 애플리케이션 접속 계정
+  # 303-postgres의 사용자 정보와 동일해야 함
   postgresUser: "data_layer"
   postgresPassword: "data_layer123!"
 
@@ -65,10 +63,10 @@ secrets:
   # data-layer-api 인증 키
   dataLayerApiKey: "b8f79dd470abff9e6b2c2de6b57f1f46081352f03aff4ce3bd1eb359cdbd1abf"
 
-  # Neo4j
+  # Neo4j 접속 계정
   platformNeo4jUser: "neo4j"
   platformNeo4jPassword: "datalayer-neo4j"
 
-  # Grafana
+  # Grafana 관리자 계정
   grafanaAdminUser: "admin"
   grafanaAdminPassword: "admin"

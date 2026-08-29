@@ -1,0 +1,61 @@
+# ===============================================
+# [토픽 프로비저닝 → Job (helm hook)]
+#
+# 구 kafka_topics 롤(kafka-topics.sh --create --if-not-exists)의 승계. install/upgrade 뒤에 한 번 돌고
+# 성공하면 지워진다(hook-delete-policy). 있으면 건드리지 않으므로 멱등이고, 목록에서 뺀 토픽은 지우지 않는다.
+# 브로커가 아직 안 떠 있으면(첫 install) bootstrap 이 응답할 때까지 기다린다 — helm 은 이 Job 이 끝나야 돌아온다.
+# 파드는 일반 네트워크 — bootstrap Service 로 붙고, 이후 브로커가 광고한 노드 IP 로 직접 간다.
+# ===============================================
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Values.kafka.name }}-topics
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: kafka-topics
+    app.kubernetes.io/name: kafka
+    app.kubernetes.io/part-of: data-layer
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-weight: "10"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 3
+  # 브로커 3대가 처음 뜨는 데 걸리는 시간(이미지 pull 포함)보다 넉넉히
+  activeDeadlineSeconds: 900
+  template:
+    metadata:
+      labels:
+        app: kafka-topics
+        app.kubernetes.io/part-of: data-layer
+    spec:
+      restartPolicy: OnFailure
+      enableServiceLinks: false
+      containers:
+        - name: topics
+          image: {{ .Values.global.harborRegistry }}/data-layer/{{ .Values.kafka.imageName }}:{{ .Values.global.imageTag }}
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              BS="{{ include "kafka.bootstrap" . }}"
+              echo "== waiting for brokers at ${BS} =="
+              i=0
+              until /opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server "$BS" >/dev/null 2>&1; do
+                i=$((i+1)); [ "$i" -ge 60 ] && { echo "brokers not reachable"; exit 1; }
+                sleep 10
+              done
+              for t in {{ join " " .Values.topics }}; do
+                /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --bootstrap-server "$BS" \
+                  --topic "$t" --partitions {{ .Values.kafka.numPartitions }} --replication-factor {{ .Values.kafka.replicationFactor }}
+              done
+              echo "== topics =="; /opt/kafka/bin/kafka-topics.sh --list --bootstrap-server "$BS"
+          env:
+            # CLI JVM 힙 — 기본 KAFKA_HEAP_OPTS(-Xmx256M)보다 줄여 4Gi 노드 부담을 낮춘다
+            - name: KAFKA_HEAP_OPTS
+              value: "-Xmx128m"
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "192Mi"

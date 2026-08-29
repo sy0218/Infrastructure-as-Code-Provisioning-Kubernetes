@@ -1,0 +1,54 @@
+# ===============================================
+# [정적 local PV → 브로커 × 볼륨 2종]
+#
+# nodes 표의 노드마다 data(로그 세그먼트)·metadata(KRaft 메타데이터) PV 를 하나씩 만든다(3노드 = 6개).
+# 경로는 Ansible kafka_prereq 가 미리 만든 디렉토리(2770, root:root — setgid 는 kubelet 의 fsGroup
+# 처리가 켜는 비트와 같게 두어 재실행 때 재귀 chown 이 다시 일어나지 않게 한다) — 컨테이너는
+# apache/kafka 의 appuser / gid 0 이라 그룹 쓰기로 붙는다.
+#
+# claimRef 가 이 설계의 핵심이다: PV 를 StatefulSet 이 만들 PVC 이름(data-kafka-N / metadata-kafka-N)에
+# 미리 묶어 두면 kafka-N 은 반드시 nodes[N] 에 뜬다 — 브로커 ID ↔ 노드 ↔ 노드 IP(voters) 가 한 표로 고정된다.
+# 노드를 교체할 때는 표의 name/ip 만 바꾼다(README '노드 장애').
+#
+# [주의] nodeAffinity 는 local 볼륨의 필수 항목이다 — 이게 파드를 노드에 못박는 실체다.
+# ===============================================
+{{- $root := . }}
+{{- range $i, $node := .Values.kafka.nodes }}
+{{- range $vol := list "data" "metadata" }}
+{{- $spec := index $root.Values.kafka $vol }}
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  # 예: kafka-data-s1 / kafka-metadata-s1
+  name: {{ printf "%s-%s-%s" $root.Values.kafka.name $vol $node.name }}
+  labels:
+    app.kubernetes.io/part-of: data-layer
+    app.kubernetes.io/name: kafka
+    data-layer/kafka-volume: {{ $vol }}
+    data-layer/kafka-node: {{ $node.name }}
+    data-layer/kafka-broker-id: {{ $i | quote }}
+spec:
+  capacity:
+    storage: {{ $spec.size }}
+  volumeMode: Filesystem
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: {{ $root.Values.kafka.storageClass }}
+  # StatefulSet 의 volumeClaimTemplates 이름 규칙 <템플릿>-<STS>-<ordinal>
+  claimRef:
+    namespace: {{ $root.Values.global.namespace }}
+    name: {{ printf "%s-%s-%d" $vol $root.Values.kafka.name $i }}
+  local:
+    path: {{ $spec.path }}
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values:
+                - {{ $node.name }}
+{{- end }}
+{{- end }}

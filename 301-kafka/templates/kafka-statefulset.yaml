@@ -1,0 +1,187 @@
+# ===============================================
+# [Kafka → StatefulSet (hostNetwork + 노드 로컬 디스크)]
+#
+# 브로커는 노드에 박힌 인프라이고 쿠버네티스는 실행기다 — 오퍼레이터 없이 StatefulSet 하나.
+#   - hostNetwork: 파드 IP = 노드 IP. 광고 주소도 노드 IP 라 클러스터 안팎이 같은 주소(노드IP:9092)로 붙고
+#     DNAT 이 없다. 대신 포트(9092/9093/9094/9404)는 노드 전체에서 유일해야 한다.
+#   - 브로커 ID = ordinal = nodes 표 인덱스. PV 가 PVC 이름(data-kafka-N)에 미리 묶여 있어 kafka-N 은
+#     nodes[N] 에만 뜬다(kafka-persistentvolumes.yaml). 안티어피니티는 그 위의 이중 안전장치.
+#   - updateStrategy OnDelete: 설정/이미지가 바뀌어도 파드가 저절로 재기동되지 않는다. 사람이 한 대씩
+#     지우고 URP 0 을 확인한 뒤 다음으로 간다(README '롤링 재기동'). RollingUpdate 는 ordinal 역순으로
+#     '준비됨' 만 보고 다음을 내리는데, Kafka 의 '준비됨' 은 포트가 열린 것이지 복제가 따라잡힌 것이 아니다.
+#
+# 노드가 죽으면: 파드는 그 노드에 Terminating/Unknown 으로 남고(kubelet 이 종료를 확인 못 함), Node 를
+# 지운 뒤 재생성된 파드는 PV 가 그 노드에만 있어 Pending 에 멈춘다. 이것이 의도다 — 빈 디스크로 브로커가
+# "복구" 되지 않는다. 남은 복제본이 서비스를 잇고, 복구는 사람이 nodes 표를 고쳐 한다(README '노드 장애').
+# ===============================================
+
+# 설정이 바뀌면 파드 템플릿 어노테이션이 바뀐다 — OnDelete 라 '변경 있음' 표시일 뿐 재기동은 사람이 한다
+{{- $configHash := printf "%s|%s" (include (print $.Template.BasePath "/kafka-configmap.yaml") .) (.Files.Get "files/jmx-exporter.yaml") | sha256sum }}
+
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ .Values.kafka.name }}
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: kafka
+    app.kubernetes.io/name: kafka
+    app.kubernetes.io/part-of: data-layer
+spec:
+  serviceName: {{ .Values.kafka.name }}-hl
+  replicas: {{ len .Values.kafka.nodes }}
+  # 기동은 ordinal 순서대로 — 쿼럼(0~2)이 먼저 서고 브로커 전용 노드가 뒤따른다
+  podManagementPolicy: OrderedReady
+  updateStrategy:
+    type: OnDelete
+  selector:
+    matchLabels:
+      app: kafka
+  template:
+    metadata:
+      labels:
+        app: kafka
+        app.kubernetes.io/name: kafka
+        app.kubernetes.io/part-of: data-layer
+      annotations:
+        checksum/config: "{{ $configHash }}"
+    spec:
+      hostNetwork: true
+      # hostNetwork 파드는 노드의 resolv.conf 를 써서 클러스터 DNS 를 잃는다 — CLI 로 svc 이름을 부를 때 필요
+      dnsPolicy: ClusterFirstWithHostNet
+      # Service env 자동 주입 차단 — 근거는 CLAUDE.md '쿠버네티스 규약'
+      enableServiceLinks: false
+      # controlled shutdown(리더 이전 + flush)이 끝날 시간
+      terminationGracePeriodSeconds: {{ .Values.kafka.terminationGracePeriodSeconds }}
+      # 컨테이너는 apache/kafka 의 appuser — 디렉토리(root:root 2770, Ansible kafka_prereq)에 gid 0 그룹 쓰기로 붙는다.
+      # OnRootMismatch: 최상위 gid·rwx·setgid 가 맞으면 재귀 chown 을 건너뛴다(데이터가 쌓인 뒤 기동이 느려지지 않는다).
+      securityContext:
+        fsGroup: 0
+        fsGroupChangePolicy: OnRootMismatch
+      affinity:
+        # 노드당 브로커 1개 — PV 고정의 이중 안전장치이자 hostNetwork 포트 충돌 방지
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app: kafka
+              topologyKey: kubernetes.io/hostname
+      containers:
+        - name: kafka
+          image: {{ .Values.global.harborRegistry }}/data-layer/{{ .Values.kafka.imageName }}:{{ .Values.global.imageTag }}
+          imagePullPolicy: IfNotPresent
+          # 이미지의 env→properties 엔트리포인트 대신 server.properties 를 직접 만든다(kafka-configmap.yaml 배너 참조).
+          # kafka-storage format 은 --ignore-formatted 라 이미 포맷된 디스크(재기동)는 건드리지 않는다.
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              ORD="${POD_NAME##*-}"
+              if [ "$ORD" -lt "$CONTROLLERS" ]; then
+                ROLES="controller,broker"
+                LISTENERS="CLIENT://0.0.0.0:{{ .Values.kafka.ports.client }},INTERNAL://0.0.0.0:{{ .Values.kafka.ports.interBroker }},CONTROLLER://0.0.0.0:{{ .Values.kafka.ports.controller }}"
+              else
+                ROLES="broker"
+                LISTENERS="CLIENT://0.0.0.0:{{ .Values.kafka.ports.client }},INTERNAL://0.0.0.0:{{ .Values.kafka.ports.interBroker }}"
+              fi
+              CFG=/opt/kafka/config/server.properties
+              sed -e "s|__NODE_ID__|${ORD}|g" -e "s|__ROLES__|${ROLES}|g" \
+                  -e "s|__LISTENERS__|${LISTENERS}|g" -e "s|__HOST_IP__|${HOST_IP}|g" \
+                  /opt/kafka-config/server.properties.tpl > "$CFG"
+              echo "== kafka-${ORD} roles=${ROLES} advertised=${HOST_IP} =="
+              # 포맷은 에이전트·브로커 힙 없이(작은 JVM) — 이미 포맷된 디스크는 --ignore-formatted 로 건너뛴다
+              /opt/kafka/bin/kafka-storage.sh format --ignore-formatted -t "$CLUSTER_ID" -c "$CFG"
+              # 브로커 JVM 에만 힙·javaagent 를 건다. 파드 env 로 두지 않는 이유: kubectl exec 로 띄우는 CLI
+              # (kafka-topics.sh 등)도 그 env 를 물려받아 javaagent 가 9404 를 또 열다 JVM 을 죽이고 힙도 1g 를 잡는다
+              # (구 로컬 설치의 'JMX_PORT env 금지' 와 같은 문제). 여기서 export 한 값은 이 셸의 자식(브로커)에만 간다.
+              export KAFKA_HEAP_OPTS="$BROKER_HEAP_OPTS"
+              export KAFKA_OPTS="$BROKER_JMX_AGENT"
+              exec /opt/kafka/bin/kafka-server-start.sh "$CFG"
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            # hostNetwork 라 파드 IP = 노드 IP. 파드 이름 기반 hostname 은 hostNetwork 에서 노드 이름이 되므로 쓰지 않는다
+            - name: HOST_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+            - name: CLUSTER_ID
+              value: {{ .Values.kafka.clusterId | quote }}
+            - name: CONTROLLERS
+              value: {{ .Values.kafka.controllers | quote }}
+            # 힙 고정 — limit 이 없어 ergonomics 상한(노드 MemTotal 의 25%)에 기대지 않는다.
+            # 이름이 KAFKA_HEAP_OPTS 가 아닌 이유는 위 command 의 주석 — 기동 스크립트가 브로커 JVM 에만 옮겨 단다.
+            - name: BROKER_HEAP_OPTS
+              value: "-Xms{{ .Values.kafka.heap }} -Xmx{{ .Values.kafka.heap }}"
+            # JMX exporter javaagent (:{{ .Values.kafka.ports.jmx }}) — jar 는 이미지, 룰은 ConfigMap 마운트. 같은 이유로 KAFKA_OPTS 가 아니다.
+            - name: BROKER_JMX_AGENT
+              value: "-javaagent:/opt/jmx/jmx_prometheus_javaagent.jar={{ .Values.kafka.ports.jmx }}:/opt/jmx/config/config.yaml"
+          ports:
+            - name: client
+              containerPort: {{ .Values.kafka.ports.client }}
+            - name: inter-broker
+              containerPort: {{ .Values.kafka.ports.interBroker }}
+            - name: controller
+              containerPort: {{ .Values.kafka.ports.controller }}
+            # 302-monitoring 이 kubernetes_sd(role=pod)로 이 포트 이름을 keep 한다
+            - name: metrics
+              containerPort: {{ .Values.kafka.ports.jmx }}
+          volumeMounts:
+            - name: data
+              mountPath: {{ .Values.kafka.data.path }}
+            - name: metadata
+              mountPath: {{ .Values.kafka.metadata.path }}
+            - name: config
+              mountPath: /opt/kafka-config
+              readOnly: true
+            - name: jmx-config
+              mountPath: /opt/jmx/config
+              readOnly: true
+          # requests-only 규약 (limits 없음)
+          resources:
+            {{- toYaml .Values.kafka.resources | nindent 12 }}
+          # 포트가 열리면 '준비'로 본다 — 복제 따라잡기는 사람이 URP 로 확인한다(README '롤링 재기동').
+          # JVM 을 띄우는 CLI probe(kafka-broker-api-versions.sh)는 probe 마다 힙을 먹어 쓰지 않는다.
+          readinessProbe:
+            tcpSocket:
+              port: client
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            failureThreshold: 6
+          livenessProbe:
+            tcpSocket:
+              port: client
+            initialDelaySeconds: 120
+            periodSeconds: 30
+            failureThreshold: 5
+      volumes:
+        - name: config
+          configMap:
+            name: {{ .Values.kafka.name }}-config
+        - name: jmx-config
+          configMap:
+            name: {{ .Values.kafka.name }}-jmx-exporter
+  # PVC 이름 <템플릿>-kafka-<ordinal> — kafka-persistentvolumes.yaml 의 claimRef 와 짝
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          app.kubernetes.io/part-of: data-layer
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: {{ .Values.kafka.storageClass }}
+        resources:
+          requests:
+            storage: {{ .Values.kafka.data.size }}
+    - metadata:
+        name: metadata
+        labels:
+          app.kubernetes.io/part-of: data-layer
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: {{ .Values.kafka.storageClass }}
+        resources:
+          requests:
+            storage: {{ .Values.kafka.metadata.size }}

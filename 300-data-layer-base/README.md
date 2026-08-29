@@ -16,7 +16,8 @@ app-of-apps 에서는 sync-wave 0 이 이 순서를 대신 지킨다.
 
 ## values 계약
 
-- `global.*` — 네임스페이스 + 클러스터 밖 접속값(Kafka·MinIO·PostgreSQL·Neo4j). 추후 ArgoCD
+- `global.*` — 네임스페이스 + 다른 스택/노드의 접속값(Kafka·MinIO·PostgreSQL·Neo4j). MinIO·Neo4j 만
+  노드 주소이고 Kafka(301-kafka StatefulSet)·PostgreSQL(303-postgres CNPG)은 Service DNS 다. 추후 ArgoCD
   app-of-apps 아래에서는 루트 values 가 주입한다(단독 helm 배포 동안은 이 파일이 단일 출처).
 - 나머지 최상위 키 — 이 차트가 소유한 값(다른 스택 포트·호스트명 미러, DB 이름, `secrets`).
 - `values.schema.json` 이 필수 키·형식(호스트명 밑줄 금지, host:port 형식 등)을 렌더 시점에

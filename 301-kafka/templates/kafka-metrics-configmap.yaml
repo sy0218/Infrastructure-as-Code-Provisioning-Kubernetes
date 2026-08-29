@@ -1,0 +1,24 @@
+# ===============================================
+# [JMX exporter 룰 → ConfigMap]
+#
+# 브로커 파드에 마운트되어 javaagent(KAFKA_OPTS, :9404, 파드 포트 이름 metrics)가 읽는다.
+# 룰 본문은 files/jmx-exporter.yaml — 여기 인라인하지 않는 이유는 정규식 패턴이 Helm
+# 템플릿 구분자(이중 중괄호)와 충돌할 여지를 없애고, 원본 파일을 그대로 diff 하기 위해서다.
+# 이미지(data_layer_kafka/Dockerfile)는 룰을 굽지 않는다 — 설정의 소유자는 이 ConfigMap 이다(302 와 같은 방식).
+#
+# 룰 변경 = 파일 수정 → helm upgrade → StatefulSet 의 checksum 어노테이션이 바뀌지만 updateStrategy 가
+# OnDelete 라 파드를 한 대씩 지워야 반영된다(README '롤링 재기동').
+# ===============================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Values.kafka.name }}-jmx-exporter
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: kafka
+    app.kubernetes.io/name: kafka
+    app.kubernetes.io/part-of: data-layer
+data:
+  # 이 키 이름이 마운트되는 파일 이름이다 (/opt/jmx/config/config.yaml) → StatefulSet 의 KAFKA_OPTS 와 짝
+  config.yaml: |
+    {{- .Files.Get "files/jmx-exporter.yaml" | nindent 4 }}

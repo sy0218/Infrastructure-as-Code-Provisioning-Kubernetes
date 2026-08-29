@@ -1,0 +1,52 @@
+# ===============================================
+# [Kafka → server.properties 템플릿 ConfigMap]
+#
+# 구 Ansible 로컬 설치의 server.properties 승계. 파드마다 다른 값(node.id·process.roles·광고 주소)은
+# __PLACEHOLDER__ 로 두고 StatefulSet 의 기동 스크립트가 sed 로 채운다 — ordinal 은 파드 이름에서,
+# IP 는 status.hostIP(hostNetwork 라 곧 노드 IP)에서. 나머지(voters·복제 기본값)는 values 에서 렌더된다.
+#
+# apache/kafka 이미지의 env→properties 변환(KAFKA_* → /etc/kafka/docker/run)을 쓰지 않는 이유:
+#   1) 그 경로의 kafka-storage format 이 --ignore-formatted 없이 돌아 재기동 동작이 이미지 버전에 묶인다
+#   2) 설정 파일 전체가 여기 한 장으로 보여야 diff·리뷰가 된다(302 의 prometheus.yml 과 같은 원칙)
+#
+# [주의] 여기의 값 변경은 자동 반영되지 않는다 — updateStrategy OnDelete (README '롤링 재기동').
+# ===============================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Values.kafka.name }}-config
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: kafka
+    app.kubernetes.io/name: kafka
+    app.kubernetes.io/part-of: data-layer
+data:
+  server.properties.tpl: |
+    # KRaft — 앞 {{ .Values.kafka.controllers }}개 파드는 controller,broker 겸용, 나머지는 broker (기동 스크립트가 채움)
+    process.roles=__ROLES__
+    node.id=__NODE_ID__
+    # 정적 쿼럼 — 전 브로커에 같은 값. 노드 IP 가 바뀌면(노드 교체) 이 줄이 바뀌고 전 브로커 롤링이 필요하다
+    controller.quorum.voters={{ include "kafka.quorumVoters" . }}
+
+    # 리스너 → CLIENT 클라이언트 / INTERNAL 브로커간 / CONTROLLER 쿼럼 (전부 PLAINTEXT, 내부망 전제)
+    # hostNetwork 라 0.0.0.0 바인드 = 노드의 그 포트를 그대로 점유한다
+    listeners=__LISTENERS__
+    advertised.listeners=CLIENT://__HOST_IP__:{{ .Values.kafka.ports.client }},INTERNAL://__HOST_IP__:{{ .Values.kafka.ports.interBroker }}
+    inter.broker.listener.name=INTERNAL
+    controller.listener.names=CONTROLLER
+    listener.security.protocol.map=CLIENT:PLAINTEXT,INTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+
+    # 스토리지 → 노드 로컬 디스크 (local PV). 세그먼트와 KRaft 메타데이터 로그를 나눈다
+    log.dirs={{ .Values.kafka.data.path }}
+    metadata.log.dir={{ .Values.kafka.metadata.path }}
+
+    # 복제/파티션 → min ISR 1 은 브로커 2대 손실에도 쓰기 지속(내구성 ↔ 가용성 트레이드오프)
+    default.replication.factor={{ .Values.kafka.replicationFactor }}
+    offsets.topic.replication.factor={{ .Values.kafka.replicationFactor }}
+    transaction.state.log.replication.factor={{ .Values.kafka.replicationFactor }}
+    min.insync.replicas={{ .Values.kafka.minInsyncReplicas }}
+    transaction.state.log.min.isr={{ .Values.kafka.minInsyncReplicas }}
+    num.partitions={{ .Values.kafka.numPartitions }}
+
+    # 계보의 ingest_ts 통일 → 브로커 도착 시각을 타임스탬프로 쓴다
+    log.message.timestamp.type=LogAppendTime

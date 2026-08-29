@@ -1,0 +1,21 @@
+# ===================================================
+# [301-kafka]
+#   - Helm Chart 스택
+#   - Kafka 클러스터(KRaft, StatefulSet — hostNetwork + 노드 로컬 디스크) + 운영 도구 3종
+#     → StatefulSet kafka / Service kafka·kafka-hl / StorageClass / local PV / 토픽 Job
+#     → schema-registry / kafka-ui / kafka-exporter
+#
+#   - 오퍼레이터를 쓰지 않는다 — 브로커는 노드에 박힌 인프라이고 K8s 는 실행기다.
+#     쿠버네티스가 브로커를 다른 노드로 "복구"하지 않는다(README '설계 원칙').
+#   - 300-data-layer-base 가 만든 공용 오브젝트
+#     (Namespace / ConfigMap / Secret)를 이름으로만 참조한다
+#     → 300 설치 후에 배포할 것.
+#   - 노드 디렉토리(/data/kafka-*)는 Ansible kafka_prereq 가 먼저 만든다.
+#   - ArgoCD 적용 시 Sync Wave 1 → 300 다음 배포
+# ===================================================
+apiVersion: v2
+name: kafka
+description: "Kafka 클러스터(KRaft 겸용 3노드, hostNetwork, 노드 로컬 디스크) + 운영 도구 → schema-registry / kafka-ui / kafka-exporter"
+type: application
+# 원본 규칙 승계: 버전은 정확 고정, 업그레이드는 숫자를 고치는 커밋으로만.
+version: 0.1.0

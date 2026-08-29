@@ -55,7 +55,7 @@
     "prometheus": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["scrapeInterval", "retention", "storageSize", "storageClass", "port", "host", "kafkaJmxTargets"],
+      "required": ["scrapeInterval", "retention", "storageSize", "storageClass", "port", "host"],
       "properties": {
         "scrapeInterval": {
           "type": "string",
@@ -77,25 +77,6 @@
           "type": "string",
           "description": "호스트명 라벨 — 밑줄 금지(원본 '호스트명에 밑줄을 쓰지 않는다' 규칙)",
           "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
-        },
-        "kafkaJmxTargets": {
-          "type": "array",
-          "description": "클러스터 밖 Kafka 브로커의 static 타깃 — Ansible host.yml kafka 그룹(노드 IP:9404)과 일치",
-          "minItems": 1,
-          "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["address", "node", "instance"],
-            "properties": {
-              "address": {
-                "type": "string",
-                "description": "host:port 형식",
-                "pattern": "^[^,\\s]+:[0-9]+$"
-              },
-              "node": { "type": "string", "minLength": 1 },
-              "instance": { "type": "string", "minLength": 1 }
-            }
-          }
         }
       }
     },

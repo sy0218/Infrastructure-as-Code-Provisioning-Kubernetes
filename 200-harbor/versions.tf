@@ -1,20 +1,23 @@
 # ===============================================
-# [Terraform / Provider 버전]
-#   → 전부 정확히 고정한다 
-#   → 범위 연산자(>=, ~>) 금지.
-#   → 업그레이드는 버전 숫자를 고치는 커밋으로만 한다.
+# [ versions.tf ] 
+#   - Terraform / Provider 버전
+#   - 전부 정확 고정 → 범위 연산자(>=, ~>) 금지.
+#
+# 테라폼 프로젝트에서 → 어떤 테라폼과 프로바이더를 사용할지 명시
 # ===============================================
 terraform {
   required_version = "1.15.8"
 
   required_providers {
-    # Harbor 차트 배포
+    # [ Helm Provider]
+    # → Kubernetes에 Harobor Helm Chart 설치
     helm = {
       source  = "hashicorp/helm"
       version = "3.2.0"
     }
 
-    # Harbor API (프로젝트 등)
+    # [ Harbor Provider ]
+    # → Harbor API를 통해 프로젝트 설정
     harbor = {
       source  = "registry.terraform.io/goharbor/harbor"
       version = "3.10.21"

@@ -1,19 +1,20 @@
 # ===============================================
-# [Helm Provider]
-#   → 클러스터 접속은 kubeconfig 하나로 일원화한다(kubeadm control-plane 의 admin.conf 복사본).
+# [Providers.tf]
+#   - Terraform이 외부 시스템을 제어하기 위한 연결 설정이다.
+#
+# Helm Provider   → Kubernetes에 Helm Chart 설치 및 관리
+# Harbor Provider → Harbor REST API를 통한 프로젝트 등 관리
+#
+# → Helm은 kubeconfig를 통해 대상 Kubernetes 클러스터에 접속한다.
+# → Harbor는 REST API를 통해 Harbor 서버에 접속한다.
 # ===============================================
+
 provider "helm" {
   kubernetes = {
     config_path = pathexpand(var.kubeconfig_path)
   }
 }
 
-# ===============================================
-# [Harbor Provider]
-#   → Harbor REST API 로 프로젝트를 관리한다.
-#   → URL 은 helm_release 의 externalURL 과 같은 주소여야 하고, Harbor 가 뜬 뒤에야 응답한다
-#     (첫 apply 는 순서상 helm → project).
-# ===============================================
 provider "harbor" {
   url      = "http://${var.harbor_host}"
   username = "admin"

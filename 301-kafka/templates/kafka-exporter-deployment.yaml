@@ -1,14 +1,14 @@
 # ===============================================
 # [Kafka Exporter → Deployment]
 #
-# 토픽/오프셋/컨슈머 Lag 을 Prometheus 형식으로 노출한다. 브로커는 클러스터
-# 밖(ADR 0)이라 공용 ConfigMap 의 KAFKA_BOOTSTRAP 으로 접속한다.
-# 브로커 JVM 메트릭은 브로커 안 javaagent 담당이라 여기서 다루지 않는다.
+# 토픽/오프셋/컨슈머 Lag 을 Prometheus 형식으로 노출한다. 브로커 주소는 다른 워크로드와
+# 똑같이 공용 ConfigMap 의 KAFKA_BOOTSTRAP 으로 받는다(값의 원본은 이 차트의 kafka.name).
+# 브로커 JVM 메트릭은 브로커 파드의 JMX exporter(:9404) 담당이라 여기서 다루지 않는다.
 # ===============================================
 
 # KAFKA_BOOTSTRAP 이 바뀌면 checksum 이 바뀌어 롤아웃된다.
-# 계산 원본은 values 의 복사본(global.kafkaBootstrap) → 300 과 같은 커밋에서 갱신된다.
-{{- $configHash := sha256sum .Values.global.kafkaBootstrap }}
+# 계산 원본은 이 차트가 소유한 브로커 주소(kafka.name 에서 조립, _helpers.tpl).
+{{- $configHash := sha256sum (include "kafka.bootstrap" .) }}
 
 apiVersion: apps/v1
 kind: Deployment

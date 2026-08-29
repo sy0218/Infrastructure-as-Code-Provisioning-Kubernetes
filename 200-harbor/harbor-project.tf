@@ -1,20 +1,20 @@
 # ===============================================
-# [Harbor 프로젝트]
-# → Harbor 안에 "data-layer"라는 저장소 공간을 만든다.
-# → data-layer 관련 Docker 이미지를 여기에 모아둔다.
-# → 이미지 주소는 harbor.example.com/data-layer/이미지명 형태가 된다.
-# → 폐쇄망 환경이라 외부 인증 없이 이미지를 pull할 수 있도록 public으로 설정한다.
-
-# → Harbor를 먼저 설치해야 프로젝트를 만들 수 있다.
-# → 따라서 Harbor Helm 설치가 끝난 뒤 이 프로젝트를 생성한다.
-
+# [Harbor Project]
+#
+# → Harbor에 "data-layer" 프로젝트를 생성한다.
+# → data-layer 관련 컨테이너 이미지를 이 프로젝트에 저장한다.
+# → 이미지 주소: <Harbor 주소>/data-layer/<이미지명>
+# → public = true: 인증 없이 이미지 Pull 가능
+#
+# → Harbor가 먼저 설치되어야 프로젝트를 생성할 수 있으므로
+#    Helm Release 완료 후 생성되도록 의존성을 설정한다.
 # ===============================================
 
 resource "harbor_project" "data_layer" {
   name   = "data-layer"
   public = true
 
-  # Harbor Helm 설치가 먼저 끝나야 한다.
+  # Harbor 설치 완료 후 프로젝트 생성
   # 그래야 Terraform이 Harbor에 접속해서 프로젝트를 만들 수 있다.
   depends_on = [helm_release.harbor]
 }
