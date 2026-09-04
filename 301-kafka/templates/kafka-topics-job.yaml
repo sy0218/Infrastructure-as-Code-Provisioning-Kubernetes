@@ -1,60 +1,106 @@
 # ===============================================
-# [토픽 프로비저닝 → Job (helm hook)]
+# [Kafka Topic Provisioning → Job]
 #
-# 구 kafka_topics 롤(kafka-topics.sh --create --if-not-exists)의 승계. install/upgrade 뒤에 한 번 돌고
-# 성공하면 지워진다(hook-delete-policy). 있으면 건드리지 않으므로 멱등이고, 목록에서 뺀 토픽은 지우지 않는다.
-# 브로커가 아직 안 떠 있으면(첫 install) bootstrap 이 응답할 때까지 기다린다 — helm 은 이 Job 이 끝나야 돌아온다.
-# 파드는 일반 네트워크 — bootstrap Service 로 붙고, 이후 브로커가 광고한 노드 IP 로 직접 간다.
+# Helm install/upgrade 후 한 번 실행하여 필수 토픽을 생성한다.
+#
+# - Kafka가 준비될 때까지 대기
+# - --if-not-exists → 기존 토픽은 변경하지 않음
+# - topics 목록에서 제거해도 기존 토픽은 삭제하지 않음
+# - 성공한 Job은 자동 삭제
 # ===============================================
+
 apiVersion: batch/v1
 kind: Job
+
 metadata:
-  name: {{ .Values.kafka.name }}-topics
+  name: {{ .Values.global.kafka.name }}-topics
   namespace: {{ .Values.global.namespace }}
+
   labels:
     app: kafka-topics
     app.kubernetes.io/name: kafka
     app.kubernetes.io/part-of: data-layer
+
   annotations:
+    # Helm install/upgrade 후 실행
     helm.sh/hook: post-install,post-upgrade
+
     helm.sh/hook-weight: "10"
+
+    # 성공한 Job은 삭제하고, 새 실행 전 기존 Job도 정리
     helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+
 spec:
-  backoffLimit: 3
-  # 브로커 3대가 처음 뜨는 데 걸리는 시간(이미지 pull 포함)보다 넉넉히
+  # 대기 재시도는 스크립트 안의 루프가 담당한다.
+  # 파드 재시도는 같은 deadline 안에서 이미지 풀·JVM 기동 비용만 다시 낸다.
+  backoffLimit: 0
+
+  # 대기 예산은 반드시 이 순서다: 스크립트 780s < activeDeadlineSeconds 900s < helm --timeout 15m
+  # helm은 hook Job을 --timeout(기본 5m) 동안만 기다린다 — 설치/업그레이드는 반드시 --timeout을 준다.
   activeDeadlineSeconds: 900
+
   template:
     metadata:
       labels:
         app: kafka-topics
         app.kubernetes.io/part-of: data-layer
+
     spec:
-      restartPolicy: OnFailure
+      # backoffLimit: 0과 한 쌍이다.
+      # OnFailure면 컨테이너가 파드 안에서 재시작되어 파드가 '활성'으로 남고,
+      # backoff 한도에 걸린 Job 컨트롤러가 그 활성 파드를 지워 실패 원인 로그까지 사라진다.
+      # Never여야 파드가 Failed로 남아 로그를 볼 수 있다.
+      restartPolicy: Never
       enableServiceLinks: false
+
       containers:
         - name: topics
+
           image: {{ .Values.global.harborRegistry }}/data-layer/{{ .Values.kafka.imageName }}:{{ .Values.global.imageTag }}
           imagePullPolicy: IfNotPresent
+
           command:
             - /bin/sh
             - -ec
             - |
               BS="{{ include "kafka.bootstrap" . }}"
-              echo "== waiting for brokers at ${BS} =="
-              i=0
-              until /opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server "$BS" >/dev/null 2>&1; do
-                i=$((i+1)); [ "$i" -ge 60 ] && { echo "brokers not reachable"; exit 1; }
+
+              # RF={{ .Values.global.kafka.replicationFactor }} 토픽은 브로커가 그 수만큼 '등록'돼야 만들어진다.
+              # kafka-broker-api-versions.sh는 1대만 응답해도 성공하므로 개수를 센다.
+              # 780s = activeDeadlineSeconds(900)보다 짧게 — 스스로 끝나야 원인이 로그에 남는다.
+              RF={{ .Values.global.kafka.replicationFactor }}
+              END=$(( $(date +%s) + 780 ))
+
+              while :; do
+                N=$(/opt/kafka/bin/kafka-broker-api-versions.sh \
+                      --bootstrap-server "$BS" 2>/dev/null | grep -c '(id: ' || true)
+
+                [ "$N" -ge "$RF" ] && break
+                [ "$(date +%s)" -ge "$END" ] && { echo "brokers registered: $N/$RF — abort"; exit 1; }
                 sleep 10
               done
+
+              # 필수 토픽 생성
               for t in {{ join " " .Values.topics }}; do
-                /opt/kafka/bin/kafka-topics.sh --create --if-not-exists --bootstrap-server "$BS" \
-                  --topic "$t" --partitions {{ .Values.kafka.numPartitions }} --replication-factor {{ .Values.kafka.replicationFactor }}
+                /opt/kafka/bin/kafka-topics.sh \
+                  --create \
+                  --if-not-exists \
+                  --bootstrap-server "$BS" \
+                  --topic "$t" \
+                  --partitions {{ .Values.global.kafka.numPartitions }} \
+                  --replication-factor {{ .Values.global.kafka.replicationFactor }}
               done
-              echo "== topics =="; /opt/kafka/bin/kafka-topics.sh --list --bootstrap-server "$BS"
+
+              # 생성 결과 확인
+              /opt/kafka/bin/kafka-topics.sh \
+                --list \
+                --bootstrap-server "$BS"
+
           env:
-            # CLI JVM 힙 — 기본 KAFKA_HEAP_OPTS(-Xmx256M)보다 줄여 4Gi 노드 부담을 낮춘다
+            # Topic CLI용 최소 JVM Heap
             - name: KAFKA_HEAP_OPTS
               value: "-Xmx128m"
+
           resources:
             requests:
               cpu: "50m"

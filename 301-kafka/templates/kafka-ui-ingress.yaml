@@ -1,12 +1,19 @@
 # ===============================================
-# [Kafka UI → 브라우저 진입점]
+# [Kafka UI → Ingress]
 #
-# 102-ingress 의 VIP 로 들어온 요청 중 Host 가 이 이름인 것만 아래 Service 로 간다.
-# 경로가 아니라 호스트로 가르는 이유: 경로 기반이면 앱마다 base path 설정을
-# 따로 넣어야 하는데, 호스트 기반은 앱이 자기가 루트에 있다고 믿어도 그대로 동작한다.
+# 외부에서 Kafka UI에 접속하기 위한 진입점이다.
+#
+# Client
+#   → Ingress VIP
+#   → Host: kafka-ui 도메인
+#   → kafka-ui Service
+#   → Kafka UI Pod
+#
+# Host 기반 라우팅을(L7) 사용해 Kafka UI를 / 경로 그대로 서비스한다.
 # ===============================================
 apiVersion: networking.k8s.io/v1
 kind: Ingress
+
 metadata:
   name: kafka-ui
   namespace: {{ .Values.global.namespace }}
@@ -14,17 +21,23 @@ metadata:
     app: kafka-ui
     app.kubernetes.io/name: kafka-ui
     app.kubernetes.io/part-of: data-layer
+
 spec:
-  # 컨트롤러가 이 클래스를 기본값으로 만들지 않으므로 생략하면 어떤 컨트롤러도 집어 가지 않는다
+  # 이 도메인으로 들어오는 요청만 처리
   ingressClassName: {{ .Values.global.ingressClassName }}
+
   rules:
-    - host: {{ .Values.kafkaUiHost }}
+    # Host 기준으로 Kafka UI 요청을 라우팅
+    - host: {{ .Values.global.hosts.kafkaUi }}
+
       http:
         paths:
           - path: /
             pathType: Prefix
+
+            # Kafka UI Service로 전달
             backend:
               service:
-                name: kafka-ui
+                name: kafka-ui # Kafka UI 라는 이름의 Kubernetes Service로 전달한다.
                 port:
                   number: {{ .Values.kafkaUiPort }}

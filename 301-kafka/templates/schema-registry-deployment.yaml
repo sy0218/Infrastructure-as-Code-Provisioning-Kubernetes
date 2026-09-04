@@ -1,12 +1,15 @@
 # ===============================================
-# [Schema Registry — Deployment]
+# [Schema Registry → Deployment]
 #
-# Avro 스키마를 저장·검증한다 — 매퍼·컨슈머·kafka-ui 가 전부 여기를 본다.
-# 저장소가 Kafka 의 _schemas 토픽이라 PVC 가 없고, 브로커보다 먼저 떠도
-# 스스로 재시도하므로 기동 순서를 강제하지 않는다.
+# Kafka 메시지의 Schema를 관리한다.
+# Schema 데이터는 Kafka의 _schemas 토픽에 저장하므로 별도 PVC가 없다.
+#
+# Kafka 연결 정보는 공용 ConfigMap을 사용한다.
 # ===============================================
+
 apiVersion: apps/v1
 kind: Deployment
+
 metadata:
   name: schema-registry
   namespace: {{ .Values.global.namespace }}
@@ -14,72 +17,80 @@ metadata:
     app: schema-registry
     app.kubernetes.io/name: schema-registry
     app.kubernetes.io/part-of: data-layer
+
 spec:
-  # 스키마 본체는 Kafka 의 _schemas 토픽(RF=3)에 있고 프로세스는 그 캐시라 stateless.
-  # 리더 선출이 내장이라 늘려도 그대로 동작한다.
+  # Stateless → 필요에 따라 복제 가능
   replicas: {{ .Values.schemaRegistryReplicas }}
+
   selector:
     matchLabels:
       app: schema-registry
+
   template:
     metadata:
       labels:
         app: schema-registry
         app.kubernetes.io/name: schema-registry
         app.kubernetes.io/part-of: data-layer
+
     spec:
-      # ⚠ 이 한 줄이 없으면 파드가 뜨자마자 exit 1 로 죽는다(CrashLoopBackOff).
-      #   쿠버네티스는 네임스페이스의 Service 마다 도커 링크 시절 호환 env 를 자동 주입하는데
-      #   (기본값 true), Service 이름이 schema-registry 라 SCHEMA_REGISTRY_PORT 가 생긴다.
-      #   이 이미지는 SCHEMA_REGISTRY_* env 를 전부 설정 프로퍼티로 번역하므로
-      #   port = "tcp://10.x.x.x:9096" 이 되어 숫자 파싱에 실패한다.
-      #   이 저장소는 전부 Service DNS + ConfigMap 으로 붙으므로 꺼도 잃는 것이 없다.
+      # Kubernetes Service 환경변수 자동 주입 방지
       enableServiceLinks: false
 
       containers:
         - name: schema-registry
+
           image: {{ .Values.global.harborRegistry }}/data-layer/schema-registry:{{ .Values.global.imageTag }}
           imagePullPolicy: IfNotPresent
+
           ports:
             - name: http
-              containerPort: {{ .Values.schemaRegistryPort }}
+              containerPort: {{ .Values.global.kafka.schemaRegistryPort }}
+
+          # 공용 환경변수 / Secret 사용
           envFrom:
             - configMapRef:
                 name: data-layer-env
             - secretRef:
                 name: data-layer-secrets
+
           env:
-            # 여러 Schema Registry 인스턴스가 동작할 때 자신의 주소 식별용.
-            # Kubernetes Pod IP를 주입해 각 인스턴스를 구분한다.
+            # 인스턴스 식별용 Pod IP
             - name: SCHEMA_REGISTRY_HOST_NAME
               valueFrom:
                 fieldRef:
                   fieldPath: status.podIP
-            # Schema Registry가 스키마를 저장할 Kafka 브로커 주소.
-            # ConfigMap에서 공통 Kafka 접속 정보를 가져온다.
+
+            # Schema 저장소인 Kafka 연결
             - name: SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS
               valueFrom:
                 configMapKeyRef:
                   name: data-layer-env
                   key: KAFKA_BOOTSTRAP_PLAINTEXT
 
-            # Schema Registry HTTP API가 열리는 주소.
-            # 0.0.0.0은 모든 네트워크 인터페이스에서 요청을 받겠다는 의미.
-            - name: SCHEMA_REGISTRY_LISTENERS
-              value: "http://0.0.0.0:{{ .Values.schemaRegistryPort }}"
+            # 이미지 엔트리포인트의 kafka-ready 사전점검 기준 (브로커 전부가 등록될 때까지 기다린다.)
+            # 기본값 1로 두면 브로커 1대만 뜬 순간 통과해 _schemas가 RF 1로 만들어진다(사후 변경 불가).
+            - name: SCHEMA_REGISTRY_CUB_KAFKA_MIN_BROKERS
+              value: {{ len .Values.global.kafka.brokers | quote }}
 
-            # 스키마 변경 호환 정책.
-            # 기존 Consumer가 새 Producer 데이터를 읽을 수 있도록 이전 버전 호환을 허용한다.
+            # _schemas 토픽 복제 수 → 의도를 명시적으로 고정
+            - name: SCHEMA_REGISTRY_KAFKASTORE_TOPIC_REPLICATION_FACTOR
+              value: {{ .Values.global.kafka.replicationFactor | quote }}
+
+            # Schema Registry HTTP API
+            - name: SCHEMA_REGISTRY_LISTENERS
+              value: "http://0.0.0.0:{{ .Values.global.kafka.schemaRegistryPort }}"
+
+            # 이전 버전 Consumer와 호환되는 Schema 허용
             - name: SCHEMA_REGISTRY_SCHEMA_COMPATIBILITY_LEVEL
               value: "backward"
 
-            # 힙 옵션을 주지 않는다 — schema-registry-run-class 가 비어 있으면 -Xmx512M 을
-            # 박아 상한이 어차피 같고, -Xms 만 여유 없는 노드에 초기 힙을 미리 커밋시킨다.
           resources:
             requests:
               cpu: "100m"
               memory: "512Mi"
-          # /subjects 는 카프카 스토어를 실제로 읽어야 응답한다 → 브로커 연결까지 검증된다.
+
+          # HTTP API + Kafka 연결 상태 확인
           readinessProbe:
             httpGet:
               path: /subjects
@@ -87,10 +98,11 @@ spec:
             initialDelaySeconds: 30
             periodSeconds: 10
             failureThreshold: 6
+
           livenessProbe:
             httpGet:
               path: /subjects
               port: http
             initialDelaySeconds: 60
-            periodSeconds: 20
+            periodSeconds: 60
             failureThreshold: 6

@@ -1,22 +1,21 @@
 # ===============================================
 # [Kafka UI → Deployment]
 #
-# 토픽/컨슈머 그룹을 브라우저에서 보는 웹 콘솔.
-# 브로커 주소와 Schema Registry 주소를 공용 ConfigMap 에서 받는다.
+# Kafka 토픽과 Consumer Group을 웹 UI로 관리한다.
 #
-# [주의] 공용 ConfigMap 키 3개를 configMapKeyRef 로 직접 읽는다(optional 아님) —
-#    300-data-layer-base 가 먼저 설치돼 있지 않으면 CreateContainerConfigError 로 뜨지 못한다.
+# - Kafka / Schema Registry 주소는 공용 ConfigMap 사용
+# - 공용 설정 변경 시 checksum으로 Pod 롤아웃
+# - 300-data-layer-base가 먼저 배포되어야 함
 # ===============================================
 
-# 소비하는 공용 값이 바뀌면 checksum 이 바뀌어 롤아웃된다.
-# 계산 원본은 이 차트가 소유한 값 — 브로커 주소(kafka.name 에서 조립, _helpers.tpl)와
-# 포트. SCHEMA_REGISTRY_URL 조립식은 300-data-layer-base 의 ConfigMap 과 같다.
+# Kafka / Schema Registry 주소 변경 시 Pod 롤아웃
 {{- $svcSuffix := printf "%s.svc.cluster.local" .Values.global.namespace }}
-{{- $schemaRegistryUrl := printf "http://schema-registry.%s:%d" $svcSuffix (int .Values.schemaRegistryPort) }}
+{{- $schemaRegistryUrl := printf "http://schema-registry.%s:%d" $svcSuffix (int .Values.global.kafka.schemaRegistryPort) }}
 {{- $configHash := printf "%s|%s" (include "kafka.bootstrap" .) $schemaRegistryUrl | sha256sum }}
 
 apiVersion: apps/v1
 kind: Deployment
+
 metadata:
   name: kafka-ui
   namespace: {{ .Values.global.namespace }}
@@ -24,66 +23,74 @@ metadata:
     app: kafka-ui
     app.kubernetes.io/name: kafka-ui
     app.kubernetes.io/part-of: data-layer
+
 spec:
   replicas: 1
+
   selector:
     matchLabels:
       app: kafka-ui
+
   template:
     metadata:
       labels:
         app: kafka-ui
         app.kubernetes.io/name: kafka-ui
         app.kubernetes.io/part-of: data-layer
+
       annotations:
-        # envFrom/configMapKeyRef 값은 파드 재생성 없이 갱신되지 않는다 →
-        # 소비하는 공용 값(KAFKA_BOOTSTRAP 등)이 바뀌면 해시가 바뀌어 롤아웃된다
+        # ConfigMap의 Kafka / Schema Registry 주소 변경 시 Pod 재생성
         checksum/kafka-bootstrap: "{{ $configHash }}"
+
     spec:
-      # Service env 자동 주입 차단 — 근거는 CLAUDE.md '쿠버네티스 규약'
       enableServiceLinks: false
 
       containers:
         - name: kafka-ui
+
           image: {{ .Values.global.harborRegistry }}/data-layer/kafka-ui:{{ .Values.global.imageTag }}
           imagePullPolicy: IfNotPresent
+
           ports:
             - name: http
               containerPort: {{ .Values.kafkaUiPort }}
+
+          # 공용 환경변수와 Secret 사용
           envFrom:
             - configMapRef:
                 name: data-layer-env
             - secretRef:
                 name: data-layer-secrets
+
           env:
             - name: SERVER_PORT
               value: {{ .Values.kafkaUiPort | quote }}
-            # kafka-ui 는 KAFKA_CLUSTERS_<n>_* 라는 자기 이름 규칙만 읽는다 →
-            # 공용 키를 configMapKeyRef 로 옮겨 담는다(값의 출처는 여전히 한 곳).
+
+            # 공용 ConfigMap 값을 Kafka UI 전용 환경변수로 매핑
             - name: KAFKA_CLUSTERS_0_NAME
               valueFrom:
                 configMapKeyRef:
                   name: data-layer-env
                   key: KAFKA_UI_CLUSTER_NAME
+
             - name: KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS
               valueFrom:
                 configMapKeyRef:
                   name: data-layer-env
                   key: KAFKA_BOOTSTRAP
+
             - name: KAFKA_CLUSTERS_0_SCHEMAREGISTRY
               valueFrom:
                 configMapKeyRef:
                   name: data-layer-env
                   key: SCHEMA_REGISTRY_URL
-            # 힙 옵션을 주지 않는다 — limit 이 없어 ergonomics 가 노드 MemTotal 의 25%
-            # (2.9Gi 기준 744Mi)를 상한으로 잡고, 이는 노드를 증설하면 함께 커진다.
-            # 고정값을 박으면 그 자동 조정을 잃는다.
+
           resources:
             requests:
               cpu: "100m"
               memory: "512Mi"
-          # actuator/health 는 브로커 상태와 무관하게 응답한다 → 브로커가 잠깐 없다고
-          # 모니터링 UI 가 함께 재기동되지 않는다.
+
+          # UI 자체의 정상 동작 여부 확인
           readinessProbe:
             httpGet:
               path: /actuator/health
@@ -91,10 +98,11 @@ spec:
             initialDelaySeconds: 30
             periodSeconds: 10
             failureThreshold: 6
+
           livenessProbe:
             httpGet:
               path: /actuator/health
               port: http
             initialDelaySeconds: 60
-            periodSeconds: 20
+            periodSeconds: 60
             failureThreshold: 6

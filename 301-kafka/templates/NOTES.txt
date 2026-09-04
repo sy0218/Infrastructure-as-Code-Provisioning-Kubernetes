@@ -4,65 +4,119 @@ Chart  : {{ .Chart.Name }}-{{ .Chart.Version }}
 
 
 [구성]
-1. Kafka 클러스터 (StatefulSet {{ .Values.kafka.name }} — hostNetwork + 노드 로컬 디스크, KRaft 겸용 {{ .Values.kafka.controllers }})
-   - 파드 {{ .Values.kafka.name }}-0..{{ sub (len .Values.kafka.nodes) 1 }} ↔ 노드 {{ range $i, $n := .Values.kafka.nodes }}{{ if $i }}, {{ end }}{{ $n.name }}({{ $n.ip }}){{ end }}  ← 브로커 ID = 파드 ordinal = nodes 표 인덱스
-   - 데이터: {{ .Values.kafka.data.path }} / 메타데이터: {{ .Values.kafka.metadata.path }} (정적 local PV, StorageClass {{ .Values.kafka.storageClass }})
-   - 토픽: {{ len .Values.topics }}개 (Job 이 --if-not-exists 로 생성, 파티션 {{ .Values.kafka.numPartitions }} / RF {{ .Values.kafka.replicationFactor }})
-   - bootstrap(내부): {{ include "kafka.bootstrap" . }}
-   - bootstrap(외부): {{ include "kafka.bootstrapExternal" . }}   ← hostNetwork 라 노드 IP 그대로
+
+1. Kafka
+   - StatefulSet {{ .Values.global.kafka.name }}
+   - KRaft {{ .Values.global.kafka.controllers }} + hostNetwork
+   - Broker 수: {{ len .Values.global.kafka.brokers }}
+   - Broker ID = Pod ordinal = brokers 표 인덱스
+   - 데이터/메타데이터: 노드 로컬 정적 PV
+   - Topic: {{ len .Values.topics }}개 자동 생성
+   - Replication Factor: {{ .Values.global.kafka.replicationFactor }}
+   - Bootstrap: {{ include "kafka.bootstrap" . }}
 
 2. Schema Registry
-   - Kafka 메시지의 데이터 형식(Schema)을 관리한다.
-   - Deployment + Service — 포트 {{ .Values.schemaRegistryPort }}
+   - Kafka 메시지 Schema 관리
+   - Deployment + Service
+   - Port: {{ .Values.global.kafka.schemaRegistryPort }}
 
 3. Kafka UI
-   - Topic, 메시지, Consumer 등을 웹 화면에서 확인한다.
-   - Deployment + Service + Ingress — http://{{ .Values.kafkaUiHost }}
+   - Topic / Message / Consumer Group 조회
+   - Deployment + Service + Ingress
+   - http://{{ .Values.global.hosts.kafkaUi }}
 
 4. Kafka Exporter
-   - 토픽/오프셋/Lag 을 Prometheus 형식으로 제공한다.
-   - Deployment + Service — 포트 {{ .Values.kafkaExporterPort }}
+   - Topic / Offset / Consumer Lag 메트릭 제공
+   - Deployment + Service
+   - Port: {{ .Values.kafkaExporterPort }}
 
 
-[전체 구조]
-   values(kafka.nodes 표)  ──helm──▶  StatefulSet {{ .Values.kafka.name }} (replicas {{ len .Values.kafka.nodes }}, OnDelete)
-                                              │  PV claimRef 로 kafka-N ↔ nodes[N] 고정
-                                              ▼
-{{- range $i, $n := .Values.kafka.nodes }}
-        {{ $.Values.kafka.name }}-{{ $i }} @ {{ $n.name }} {{ $n.ip }}:{{ $.Values.kafka.ports.client }}  ({{ if lt $i (int $.Values.kafka.controllers) }}controller+broker{{ else }}broker{{ end }})   {{ $.Values.kafka.data.path }} · {{ $.Values.kafka.metadata.path }}
-{{- end }}
-                                              │
-          Schema Registry ─┐                  │
-          Kafka UI ────────┼──▶ {{ include "kafka.bootstrap" . }}
-          Kafka Exporter ──┘                  │
-          306-cdc / 307-pipeline ─────────────┘ (공용 ConfigMap 의 KAFKA_BOOTSTRAP)
-          외부 PC/장비 ──▶ {{ include "kafka.bootstrapExternal" . }}
+[구조]
+
+values.common.yaml
+    │
+    └── global.kafka.brokers
+             │
+             ▼
+    Kafka StatefulSet
+             │
+       ┌─────┼─────┐
+       ▼     ▼     ▼
+    kafka-0 kafka-1 kafka-2
+       │     │     │
+      PV    PV    PV
+       │     │     │
+      Node  Node  Node
+
+Kafka UI / Schema Registry / Exporter
+                │
+                ▼
+         KAFKA_BOOTSTRAP
+                │
+                ▼
+        Kafka Broker 직접 연결
 
 
 [장애 원칙]
-- 노드가 죽으면 그 노드의 브로커 파드는 다른 노드로 옮겨지지 않는다 (PV 가 그 노드에만 있다).
-  Node 를 지운 뒤 재생성되는 파드는 Pending 에 멈춘다 — 쿠버네티스가 빈 디스크로 "복구"하지 않는다.
-  남은 복제본(RF {{ .Values.kafka.replicationFactor }})이 서비스를 잇는다. 복구 절차는 README '노드 장애'.
-- updateStrategy 가 OnDelete 라 설정/이미지 변경도 저절로 반영되지 않는다 → README '롤링 재기동'.
+
+- Broker는 노드 + Local PV에 고정된다.
+- 노드 장애 시 다른 노드로 자동 이동하지 않는다.
+- 남은 Broker의 RF 복제로 서비스를 유지한다.
+- 노드 교체/복구는 brokers 표를 수정하고 수동으로 진행한다.
+- updateStrategy=OnDelete → 설정/이미지 변경 시 자동 재기동하지 않는다.
+- 롤링 재기동은 Broker별로 상태를 확인하며 수동 진행한다.
 
 
 [배포 전제]
-- Ansible kafka_prereq 로 nodes 표의 노드마다 {{ .Values.kafka.data.path }} / {{ .Values.kafka.metadata.path }} 가 만들어져 있을 것 (root:root 2770).
-- 노드 포트 {{ .Values.kafka.ports.client }}/{{ .Values.kafka.ports.interBroker }}/{{ .Values.kafka.ports.controller }}/{{ .Values.kafka.ports.jmx }} 가 비어 있을 것 (hostNetwork).
-- Harbor 에 kafka / schema-registry / kafka-ui / kafka-exporter 이미지가 push 되어 있을 것.
-- 300-data-layer-base install (공용 ConfigMap 의 KAFKA_BOOTSTRAP = 위 내부 bootstrap).
+
+- Ansible kafka_prereq 실행 완료
+  → {{ .Values.global.kafka.data.path }}
+  → {{ .Values.global.kafka.metadata.path }}
+
+- hostNetwork 포트가 노드에서 사용 가능해야 한다.
+  → {{ .Values.global.kafka.ports.client }}
+  → {{ .Values.global.kafka.ports.interBroker }}
+  → {{ .Values.global.kafka.ports.controller }}
+  → {{ .Values.global.kafka.ports.jmx }}
+
+- Harbor에 Kafka / Schema Registry / Kafka UI / Exporter 이미지가 있어야 한다.
+
+- 300-data-layer-base가 먼저 배포되어야 한다.
+  → 공용 ConfigMap / Secret / KAFKA_BOOTSTRAP 제공
 
 
 [확인]
-kubectl -n {{ .Values.global.namespace }} get sts {{ .Values.kafka.name }} -o wide
-kubectl -n {{ .Values.global.namespace }} get pod -l app=kafka -o wide            # 노드마다 1개, IP = 노드 IP
-kubectl -n {{ .Values.global.namespace }} get pvc -l app.kubernetes.io/part-of=data-layer | grep {{ .Values.kafka.name }}
-kubectl get pv -l app.kubernetes.io/name=kafka                                  # Bound ×{{ mul 2 (len .Values.kafka.nodes) }}
-kubectl -n {{ .Values.global.namespace }} exec {{ .Values.kafka.name }}-0 -- /opt/kafka/bin/kafka-metadata-quorum.sh --bootstrap-server localhost:{{ .Values.kafka.ports.client }} describe --status
-kubectl -n {{ .Values.global.namespace }} exec {{ .Values.kafka.name }}-0 -- /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:{{ .Values.kafka.ports.client }} --list
-kubectl -n {{ .Values.global.namespace }} rollout status deploy/schema-registry deploy/kafka-ui deploy/kafka-exporter
+
+# StatefulSet / Pod
+kubectl -n {{ .Values.global.namespace }} get sts {{ .Values.global.kafka.name }} -o wide
+kubectl -n {{ .Values.global.namespace }} get pod -l app=kafka -o wide
+
+# PVC / PV
+kubectl -n {{ .Values.global.namespace }} get pvc -l app.kubernetes.io/part-of=data-layer
+kubectl get pv -l app.kubernetes.io/name=kafka
+
+# KRaft Quorum
+kubectl -n {{ .Values.global.namespace }} exec {{ .Values.global.kafka.name }}-0 -- \
+  /opt/kafka/bin/kafka-metadata-quorum.sh \
+  --bootstrap-server localhost:{{ .Values.global.kafka.ports.client }} \
+  describe --status
+
+# Topic
+kubectl -n {{ .Values.global.namespace }} exec {{ .Values.global.kafka.name }}-0 -- \
+  /opt/kafka/bin/kafka-topics.sh \
+  --bootstrap-server localhost:{{ .Values.global.kafka.ports.client }} \
+  --list
+
+# 운영 도구
+kubectl -n {{ .Values.global.namespace }} rollout status \
+  deploy/schema-registry deploy/kafka-ui deploy/kafka-exporter
 
 
 [주의]
-- helm uninstall 은 StatefulSet·PV 오브젝트를 지운다(PVC 와 디스크 데이터는 남는다) — 값 변경은 항상 helm upgrade 로.
-- kafka.name 을 바꾸면 300-data-layer-base 의 global.kafkaBootstrap 을 같은 커밋에서 함께 고친다.
+
+- 값 변경은 helm upgrade로 관리한다.
+- bootstrap 주소는 global.kafka.brokers에서 자동 생성된다.
+- 300-data-layer-base의 KAFKA_BOOTSTRAP도 같은 원본을 사용한다.
+- Broker 추가/노드 교체는 global.kafka.brokers만 수정하고
+  해당 노드에 kafka_prereq를 먼저 실행한다.
+- helm uninstall 후에도 PVC와 Local PV의 실제 데이터는 Retain 정책으로 남는다.

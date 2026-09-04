@@ -1,11 +1,17 @@
 # ===============================================
 # [Kafka Exporter → Service]
 #
-# 302-monitoring 의 Prometheus 가 이 Service 를 통해 메트릭을 긁어간다.
-# 외부 공개가 필요 없어 ClusterIP.
+# Prometheus가 이 Service를 통해 Kafka Exporter 메트릭을 수집한다.
+# 외부 공개가 필요 없으므로 ClusterIP를 사용한다.
+#
+# Prometheus → Service port → targetPort → Exporter Pod
+#
+# Service 이름(kafka-exporter)과 포트 이름(metrics)으로
+# Prometheus 수집 대상을 식별한다.
 # ===============================================
 apiVersion: v1
-kind: Service
+kind: Service # 쿠버네티스 리소스 정의
+
 metadata:
   name: kafka-exporter
   namespace: {{ .Values.global.namespace }}
@@ -13,14 +19,19 @@ metadata:
     app: kafka-exporter
     app.kubernetes.io/name: kafka-exporter
     app.kubernetes.io/part-of: data-layer
-  # prometheus.io/* 어노테이션은 일부러 두지 않는다 — 302-monitoring 은 annotation 자동 발견
-  # 대신 Service·포트 이름으로 keep 한다(prometheus-config.yaml.tftpl 의 regex `kafka-exporter;metrics`).
+
 spec:
   type: ClusterIP
+
   selector:
+    # app=kafka-exporter Pod로 트래픽 전달
     app: kafka-exporter
+
   ports:
     - name: metrics
+
+      # Prometheus가 Service에 접속하는 포트
       port: {{ .Values.kafkaExporterPort }}
-      # 숫자가 아니라 이름으로 묶어 containerPort 가 바뀌어도 따라가게 한다
+
+      # Service가 Exporter Pod의 metrics 포트로 전달
       targetPort: metrics

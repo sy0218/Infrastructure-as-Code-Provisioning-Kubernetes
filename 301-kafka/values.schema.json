@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "kafka values",
-  "description": "구 301-kafka-tools 의 'default 없는 변수 = tfvars 강제' 규칙의 Helm 판 — 필수 키 누락·오타·형식 오류를 렌더(lint/template/install) 시점에 잡는다. global 은 루트가 다른 차트용 키까지 통짜로 주입하므로 additionalProperties 를 막지 않는다.",
+  "description": "구 301-kafka-tools 의 'default 없는 변수 = tfvars 강제' 규칙의 Helm 판 — 필수 키 누락·오타·형식 오류를 렌더(lint/template/install) 시점에 잡는다. 이 차트가 global 에서 실제로 참조하는 키만 required 로 선언한다(values.common.yaml 을 -f 로 주지 않으면 렌더 전에 실패). global 에는 다른 차트용 키도 함께 들어오므로 additionalProperties 를 막지 않는다.",
   "type": "object",
   "additionalProperties": true,
   "required": [
@@ -9,25 +9,34 @@
     "kafka",
     "topics",
     "schemaRegistryReplicas",
-    "schemaRegistryPort",
     "kafkaUiPort",
-    "kafkaExporterPort",
-    "kafkaUiHost"
+    "kafkaExporterPort"
   ],
   "definitions": {
     "requestsOnly": {
       "type": "object",
       "description": "requests-only 규약 — limits 키를 막는다",
       "additionalProperties": false,
-      "required": ["requests"],
+      "required": [
+        "requests"
+      ],
       "properties": {
         "requests": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["cpu", "memory"],
+          "required": [
+            "cpu",
+            "memory"
+          ],
           "properties": {
-            "cpu": { "type": "string", "pattern": "^[0-9]+(m|\\.[0-9]+)?$" },
-            "memory": { "type": "string", "pattern": "^[0-9]+(Mi|Gi)$" }
+            "cpu": {
+              "type": "string",
+              "pattern": "^[0-9]+(m|\\.[0-9]+)?$"
+            },
+            "memory": {
+              "type": "string",
+              "pattern": "^[0-9]+(Mi|Gi)$"
+            }
           }
         }
       }
@@ -35,14 +44,20 @@
     "localVolume": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["path", "size"],
+      "required": [
+        "path",
+        "size"
+      ],
       "properties": {
         "path": {
           "type": "string",
           "description": "노드의 절대 경로 — Ansible group_vars/kafka.yml 과 글자 그대로 같아야 한다",
           "pattern": "^/[^\\s]+$"
         },
-        "size": { "type": "string", "pattern": "^[0-9]+(Mi|Gi|Ti)$" }
+        "size": {
+          "type": "string",
+          "pattern": "^[0-9]+(Mi|Gi|Ti)$"
+        }
       }
     }
   },
@@ -50,7 +65,14 @@
     "global": {
       "type": "object",
       "additionalProperties": true,
-      "required": ["namespace", "harborRegistry", "imageTag", "ingressClassName"],
+      "required": [
+        "namespace",
+        "harborRegistry",
+        "imageTag",
+        "ingressClassName",
+        "kafka",
+        "hosts"
+      ],
       "properties": {
         "namespace": {
           "type": "string",
@@ -71,6 +93,133 @@
         "ingressClassName": {
           "type": "string",
           "minLength": 1
+        },
+        "kafka": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": [
+            "brokers",
+            "ports",
+            "schemaRegistryPort",
+            "name",
+            "controllers",
+            "replicationFactor",
+            "numPartitions",
+            "data",
+            "metadata"
+          ],
+          "properties": {
+            "brokers": {
+              "type": "array",
+              "description": "Broker 를 띄울 노드 표 — 쿠버네티스 전체 노드가 아니라 의도적으로 고른 부분집합. 목록 길이 = replicas, 인덱스 = 브로커 ID = 파드 ordinal. 이름·IP 중복 금지. bootstrap 주소도 이 표에서 조립된다",
+              "minItems": 3,
+              "uniqueItems": true,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "name",
+                  "ip"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "description": "kubernetes.io/hostname 값 (PV nodeAffinity)",
+                    "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+                  },
+                  "ip": {
+                    "type": "string",
+                    "description": "노드 IP (hostNetwork 광고 주소·voters·bootstrap)",
+                    "pattern": "^([0-9]{1,3}\\.){3}[0-9]{1,3}$"
+                  }
+                }
+              }
+            },
+            "ports": {
+              "type": "object",
+              "description": "hostNetwork 라 곧 노드 포트다 — 노드의 다른 프로세스와 겹치면 안 된다",
+              "additionalProperties": false,
+              "required": [
+                "client",
+                "interBroker",
+                "controller",
+                "jmx"
+              ],
+              "properties": {
+                "client": {
+                  "type": "integer",
+                  "minimum": 1024,
+                  "maximum": 65535
+                },
+                "interBroker": {
+                  "type": "integer",
+                  "minimum": 1024,
+                  "maximum": 65535
+                },
+                "controller": {
+                  "type": "integer",
+                  "minimum": 1024,
+                  "maximum": 65535
+                },
+                "jmx": {
+                  "type": "integer",
+                  "minimum": 1024,
+                  "maximum": 65535
+                }
+              }
+            },
+            "schemaRegistryPort": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535
+            },
+            "name": {
+              "type": "string",
+              "description": "StatefulSet 이름 → 파드 kafka-N, ConfigMap <name>-config (브로커는 hostNetwork 라 Service 없음)",
+              "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+              "maxLength": 40
+            },
+            "controllers": {
+              "type": "integer",
+              "description": "brokers 앞에서부터 controller+broker 겸용으로 둘 개수 — 홀수(3 또는 5). 정적 쿼럼이라 생성 후 변경은 전 브로커 롤링",
+              "enum": [
+                3,
+                5
+              ]
+            },
+            "replicationFactor": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "minInsyncReplicas": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "numPartitions": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "data": {
+              "$ref": "#/definitions/localVolume"
+            },
+            "metadata": {
+              "$ref": "#/definitions/localVolume"
+            }
+          }
+        },
+        "hosts": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": [
+            "kafkaUi"
+          ],
+          "properties": {
+            "kafkaUi": {
+              "type": "string",
+              "description": "호스트명 라벨 — 밑줄 금지(원본 '호스트명에 밑줄을 쓰지 않는다' 규칙)",
+              "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+            }
+          }
         }
       }
     },
@@ -78,62 +227,39 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "name", "clusterId", "imageName", "ports", "nodes", "controllers", "storageClass", "data", "metadata",
-        "heap", "resources", "replicationFactor", "minInsyncReplicas", "numPartitions", "terminationGracePeriodSeconds"
+        "clusterId",
+        "imageName",
+        "storageClass",
+        "heap",
+        "resources",
+        "terminationGracePeriodSeconds"
       ],
       "properties": {
-        "name": {
-          "type": "string",
-          "description": "StatefulSet/Service 이름 → 파드 kafka-N, bootstrap Service. RFC 1123 라벨. 300 의 kafkaBootstrap 과 같은 커밋 규칙",
-          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
-          "maxLength": 40
-        },
         "clusterId": {
           "type": "string",
           "description": "KRaft 클러스터 ID (base64url 22자) — 바꾸면 기존 디스크와 충돌",
           "pattern": "^[A-Za-z0-9_-]{22}$"
         },
-        "imageName": { "type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" },
-        "ports": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["client", "interBroker", "controller", "jmx"],
-          "properties": {
-            "client": { "type": "integer", "minimum": 1024, "maximum": 65535 },
-            "interBroker": { "type": "integer", "minimum": 1024, "maximum": 65535 },
-            "controller": { "type": "integer", "minimum": 1024, "maximum": 65535 },
-            "jmx": { "type": "integer", "minimum": 1024, "maximum": 65535 }
-          }
+        "imageName": {
+          "type": "string",
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
         },
-        "nodes": {
-          "type": "array",
-          "description": "브로커 ↔ 노드 고정표. 인덱스 = 브로커 ID = 파드 ordinal. 최소 3(RF 3), 노드 이름·IP 중복 금지",
-          "minItems": 3,
-          "uniqueItems": true,
-          "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["name", "ip"],
-            "properties": {
-              "name": { "type": "string", "description": "kubernetes.io/hostname 값", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" },
-              "ip": { "type": "string", "description": "노드 IP (hostNetwork 광고 주소·voters)", "pattern": "^([0-9]{1,3}\\.){3}[0-9]{1,3}$" }
-            }
-          }
+        "storageClass": {
+          "type": "string",
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
         },
-        "controllers": {
+        "heap": {
+          "type": "string",
+          "description": "JVM -Xms/-Xmx 값 (예: 1g, 768m)",
+          "pattern": "^[0-9]+[mMgG]$"
+        },
+        "resources": {
+          "$ref": "#/definitions/requestsOnly"
+        },
+        "terminationGracePeriodSeconds": {
           "type": "integer",
-          "description": "앞에서부터 controller+broker 겸용으로 둘 파드 수 — 홀수(3 또는 5). 정적 쿼럼이라 생성 후 변경은 전 브로커 롤링",
-          "enum": [3, 5]
-        },
-        "storageClass": { "type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" },
-        "data": { "$ref": "#/definitions/localVolume" },
-        "metadata": { "$ref": "#/definitions/localVolume" },
-        "heap": { "type": "string", "description": "JVM -Xms/-Xmx 값 (예: 1g, 768m)", "pattern": "^[0-9]+[mMgG]$" },
-        "resources": { "$ref": "#/definitions/requestsOnly" },
-        "replicationFactor": { "type": "integer", "minimum": 1 },
-        "minInsyncReplicas": { "type": "integer", "minimum": 1 },
-        "numPartitions": { "type": "integer", "minimum": 1 },
-        "terminationGracePeriodSeconds": { "type": "integer", "minimum": 30 }
+          "minimum": 30
+        }
       }
     },
     "topics": {
@@ -147,14 +273,19 @@
         "maxLength": 249
       }
     },
-    "schemaRegistryReplicas": { "type": "integer", "minimum": 1 },
-    "schemaRegistryPort": { "type": "integer", "minimum": 1, "maximum": 65535 },
-    "kafkaUiPort": { "type": "integer", "minimum": 1, "maximum": 65535 },
-    "kafkaExporterPort": { "type": "integer", "minimum": 1, "maximum": 65535 },
-    "kafkaUiHost": {
-      "type": "string",
-      "description": "호스트명 라벨 — 밑줄 금지(원본 '호스트명에 밑줄을 쓰지 않는다' 규칙)",
-      "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+    "schemaRegistryReplicas": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "kafkaUiPort": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 65535
+    },
+    "kafkaExporterPort": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 65535
     }
   }
 }

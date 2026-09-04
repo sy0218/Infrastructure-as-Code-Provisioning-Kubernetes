@@ -2,18 +2,16 @@
 
 **Kafka 클러스터(StatefulSet) + 운영 도구 3종.** 구 `301-kafka-tools` 를 개명·통합했고, 브로커는 구 Ansible
 systemd 설치(ADR 0)를 K8s 로 그대로 옮긴 것이다 — **오퍼레이터를 쓰지 않는다.** 브로커는 노드에 박힌 인프라이고
-쿠버네티스는 실행기다. 네임스페이스·공용 ConfigMap/Secret 은 300-data-layer-base 가, 노드 디렉토리는 Ansible
+쿠버네티스는 실행기다. 네임스페이스·공용 ConfigMap/Secret **과 이 차트의 설정 ConfigMap
+(`kafka-config`·`kafka-jmx-exporter`)** 은 300-data-layer-base 가, 노드 디렉토리는 Ansible
 `kafka_prereq` 가 소유하고, 이 차트는 **StatefulSet·정적 PV·설정·토픽 Job·도구 3종**을 소유한다.
 추후 ArgoCD app-of-apps 에서는 sync-wave 1 (300 다음)이다.
 
 | 오브젝트 | 이름 | 역할 |
 |---|---|---|
 | StatefulSet | `kafka` (파드 `kafka-0..2`) | KRaft 브로커 3 — 앞 `controllers`(3)개는 controller+broker 겸용. **hostNetwork**, `updateStrategy: OnDelete` |
-| Service | `kafka` / `kafka-hl` | 클러스터 안 bootstrap(ClusterIP, readiness 통과분만) / STS headless(파드 DNS) |
 | StorageClass | `kafka-local` | 프로비저너 없음, `WaitForFirstConsumer`, `Retain` — 정적 local PV 전용 |
-| PersistentVolume ×6 | `kafka-{data,metadata}-<노드>` | `/data/kafka-broker`(10Gi, log.dirs) · `/data/kafka-controller`(2Gi, metadata.log.dir). **`claimRef` 로 PVC `data-kafka-N` 에 미리 묶여** kafka-N ↔ nodes[N] 고정 |
-| ConfigMap | `kafka-config` | `server.properties.tpl` — 구 Ansible server.properties 승계. 파드별 값은 기동 스크립트가 채움 |
-| ConfigMap | `kafka-jmx-exporter` | JMX exporter 룰(`files/jmx-exporter.yaml`) → 파드 :9404 `metrics` |
+| PersistentVolume ×2N | `kafka-{data,metadata}-<노드>` | `/data/kafka-broker`(10Gi, log.dirs) · `/data/kafka-controller`(2Gi, metadata.log.dir). **`claimRef` 로 PVC `data-kafka-N` 에 미리 묶여** kafka-N ↔ brokers[N] 고정 |
 | Job (helm hook) | `kafka-topics` | 파이프라인 계약 토픽 16개 `--if-not-exists` (파티션 3 / RF 3) — 구 `kafka_topics` 롤 승계 |
 | Deployment + Service | `schema-registry` | Avro 스키마 저장·검증 (포트 9096) |
 | Deployment + Service | `kafka-ui` | 토픽·컨슈머 그룹 웹 콘솔 (포트 9095) |
@@ -24,17 +22,17 @@ systemd 설치(ADR 0)를 K8s 로 그대로 옮긴 것이다 — **오퍼레이�
 
 ```
 Node ap          Node s1          Node s2
-kafka-0          kafka-1          kafka-2        ← 브로커 ID = 파드 ordinal = kafka.nodes 표 인덱스
-192.168.0.38     192.168.0.39     192.168.0.40   ← hostNetwork: 파드 IP = 노드 IP = 광고 주소
+kafka-0          kafka-1          kafka-2        ← 브로커 ID = 파드 ordinal = global.kafka.brokers 표 인덱스
+192.168.56.38     192.168.56.39     192.168.56.40   ← hostNetwork: 파드 IP = 노드 IP = 광고 주소
 /data/kafka-*    /data/kafka-*    /data/kafka-*  ← 정적 local PV, 노드에 못박힘
    └──────── Kafka Replication (RF 3) ────────┘
 ```
 
 - **hostNetwork.** 파드 IP 가 노드 IP 이고 `advertised.listeners` 도 노드 IP:9092 다. 클러스터 안팎이 같은 주소로
-  붙고 Service·NodePort·VIP 어느 것도 경로에 없다(bootstrap Service 는 첫 접속 한 번뿐). 대가: 9092/9093/9094/9404 는
-  노드 전체에서 유일해야 하고, 브로커 ID ↔ 노드 IP 가 고정된다(`controller.quorum.voters`).
+  붙고 Service·NodePort·VIP 어느 것도 경로에 없다 — **브로커에는 Service 오브젝트 자체가 없다**(아래 'bootstrap 주소').
+  대가: 9092/9093/9094/9404 는 노드 전체에서 유일해야 하고, 브로커 ID ↔ 노드 IP 가 고정된다(`controller.quorum.voters`).
 - **브로커 ↔ 노드 고정은 PV 의 `claimRef` 가 한다.** StatefulSet 이 만들 PVC 이름(`data-kafka-N`)에 PV 를 미리 묶어
-  두면 kafka-N 은 nodes[N] 에만 스케줄된다. local-path 를 쓰지 않는 이유 — 파드가 다른 노드에 뜨면 빈 디스크에서
+  두면 kafka-N 은 brokers[N] 에만 스케줄된다. local-path 를 쓰지 않는 이유 — 파드가 다른 노드에 뜨면 빈 디스크에서
   시작한다.
 - **노드가 죽으면 그 파드는 다른 노드로 못 옮긴다.** 죽은 직후에는 kubelet 이 종료를 확인 못 해 파드가 그 노드에
   Terminating/Unknown 으로 남고, Node 를 지운 뒤 재생성된 파드는 PV 가 없어 Pending 에 멈춘다. 이것이 의도다 —
@@ -50,25 +48,78 @@ kafka-0          kafka-1          kafka-2        ← 브로커 ID = 파드 ordin
 
 ## values 계약
 
-- `global.*` — 네임스페이스 + 배포 공통값(harborRegistry·imageTag·ingressClassName). 브로커 이미지(`kafka`)와 도구 3종
-  이미지가 같은 태그를 쓴다.
-- `kafka.*` — `name`(파드/Service 접두) · `clusterId`(KRaft, 디스크에 각인) · `imageName` · `ports` · **`nodes` 표** ·
+- `global.*` 은 **이 차트에 없다** — 저장소 루트 `values.common.yaml` 이 유일한 정의처다(`-f values.common.yaml`).
+  여기서 쓰는 것은 `namespace` · `harborRegistry` · `imageTag`(브로커와 도구 3종이 같은 태그) ·
+  `ingressClassName` · **`nodes` 표** · `kafka.ports.*` · `kafka.schemaRegistryPort` · `hosts.kafkaUi` 다.
+- **`nodes` 표와 브로커 포트가 공통값인 이유**: 노드 표는 300 이 `KAFKA_BOOTSTRAP` 조립에 그대로 쓰고,
+  브로커는 hostNetwork 라 포트가 곧 노드 포트(클러스터 전역 사실)다.
+- `kafka.*` — 이 차트 소유: `name`(StatefulSet·파드·설정 ConfigMap 이름) · `clusterId`(KRaft, 디스크에 각인) · `imageName` ·
   `controllers` · `storageClass` · `data/metadata.{path,size}` · `heap` · `resources` · 복제 기본값 · `terminationGracePeriodSeconds`.
 - `topics` — 토픽 Job 목록. 빼도 토픽은 지워지지 않는다(삭제는 수동).
-- 나머지 최상위 키 — 도구 3종(포트 3종·복제 수·`kafkaUiHost`).
+- 나머지 최상위 키 — 도구 3종 중 이 차트만 쓰는 값(`schemaRegistryReplicas`·`kafkaUiPort`·`kafkaExporterPort`).
 - `values.schema.json` 이 필수 키·형식(노드 3 이상·중복 금지, IP 형식, `controllers` 3|5, 경로 절대경로, requests-only,
   토픽 이름 등)을 렌더 시점에 강제한다.
 
-### 복사본/커플링 값 (바꿀 때 같은 커밋에서 함께)
+### bootstrap 주소 — 노드 IP 직결
 
-- `kafka.name` + `ports.client` → 브로커 주소 `kafka.data-layer.svc.cluster.local:9092`. **이 차트가 원본**이고 300 의
-  `global.kafkaBootstrap`(→ 공용 ConfigMap `KAFKA_BOOTSTRAP`), `data_pipeline/data_layer_kafka/kafka.conf` 의
-  `BOOTSTRAP`/`POD` 가 복사본. 차트 안에서는 `_helpers.tpl` 의 `kafka.bootstrap` 이 유일한 조립 지점.
-- `kafka.nodes[].ip` → Ansible `host.yml` 의 노드 IP. `controller.quorum.voters` 와 광고 주소가 여기서 나온다.
+`_helpers.tpl` 의 `kafka.bootstrap` 이 `global.kafka.brokers` × `global.kafka.ports.client` 로 조립한다:
+
+```
+192.168.56.38:9092,192.168.56.39:9092,192.168.56.40:9092
+```
+
+브로커는 hostNetwork 라 노드 IP:9092 를 광고한다. bootstrap 도 같은 주소를 쓰면 **Service ClusterIP 홉
+(kube-proxy DNAT)과 DNS 조회가 사라지고, 클러스터 안과 밖이 같은 주소가 된다.** 브로커 한 대가 죽어도
+클라이언트는 목록의 다음 주소로 넘어간다(bootstrap 은 원래 다중 주소 전제).
+
+300 의 `KAFKA_BOOTSTRAP` 도 **같은 `global.kafka.brokers` 에서 같은 방식으로** 조립된다 — 복사본이 아니라
+같은 원본의 파생값이라 어긋날 수 없다.
+
+### 브로커에는 Service 가 없다 (headless·ClusterIP 둘 다 두지 않는다)
+
+hostNetwork 브로커에 Service 를 붙여도 **아무도 그 주소를 쓰지 않는다.** 확인한 소비자 전부가 노드 IP 로 간다:
+
+| 소비자 | 브로커를 찾는 경로 |
+|---|---|
+| 파이프라인·도구 3종·306-cdc | 공용 ConfigMap `KAFKA_BOOTSTRAP` = 노드 IP 목록 |
+| 토픽 Job | `_helpers.tpl` 의 `kafka.bootstrap` = 같은 노드 IP 목록 |
+| 브로커 ↔ 브로커 / KRaft | `advertised.listeners`(`status.hostIP`) · `controller.quorum.voters`(표의 IP) |
+| 302-monitoring `kafka-jmx` | `role: pod` SD — 파드 라벨 `app=kafka` + 포트 이름 `metrics` (Service 를 거치지 않는다) |
+| 파드 안 CLI | `--bootstrap-server localhost:9092` (브로커 파드 안에서 exec) |
+
+- **ClusterIP `kafka`** 는 bootstrap 접속점이었지만, bootstrap 이 노드 IP 목록으로 바뀐 시점에 소비자가 사라졌다.
+  남겨 두면 "브로커 주소가 둘"이 되어 kube-proxy DNAT 를 타는 경로가 조용히 되살아난다.
+- **headless `kafka-hl`** 은 STS 의 `serviceName` 이었다. 그런데 파드별 DNS(`kafka-0.kafka-hl…`)를 부르는 곳이 없고,
+  hostNetwork 파드는 노드의 UTS 를 쓰므로 hostname 도 노드 이름(`ap`)이지 `kafka-0` 이 아니다 — DNS 이름만 뜨는 상태였다.
+  k8s 1.34 의 `StatefulSetSpec` 은 `selector`/`template` 만 required 라 `serviceName` 을 생략했다.
+- 되살리고 싶어지면 그건 브로커 주소를 Service 로 되돌리자는 뜻이다 — `advertised.listeners` 가 노드 IP 인 한
+  첫 접속만 Service 를 타고 이후 트래픽은 노드 IP 로 가므로, 홉만 늘고 얻는 것이 없다.
+
+#### 이미 떠 있는 클러스터에 적용할 때 (1회)
+
+`serviceName` 은 불변 필드라 `helm upgrade` 만으로는 `spec: Forbidden` 이 난다. STS 오브젝트만 지우고 다시 만든다 —
+**브로커는 재기동되지 않는다**(새 STS 가 같은 라벨의 파드를 그대로 입양한다. 랩에서 파드 UID·RESTARTS 유지 확인함).
+
+```bash
+kubectl -n data-layer delete statefulset kafka --cascade=orphan     # 파드·PVC·PV 는 남는다
+helm upgrade kafka ./301-kafka -f values.common.yaml -n data-layer --timeout 15m   # Service 2개는 helm 이 지운다
+
+kubectl -n data-layer get sts kafka -o jsonpath='{.spec.serviceName}'; echo   # 빈 값
+kubectl -n data-layer get pod -l app=kafka                                    # RESTARTS 0 유지
+kubectl -n data-layer get svc | grep -E '^kafka(-hl)?\s'                     # 빈 출력
+```
+
+기존 파드 spec 에는 `subdomain: kafka-hl` 이 남는다(파드 불변 필드) — 가리키는 Service 가 없어 DNS 도 안 생기고,
+hostNetwork 라 어차피 hostname 은 노드 이름이다. 다음 롤링 재기동 때 사라진다.
+
+### 클러스터 밖 값과의 커플링 (바꿀 때 같은 커밋에서 함께)
+
+- `global.kafka.brokers[].ip` → Ansible `host.yml` 의 `ansible_host`. bootstrap · `controller.quorum.voters` ·
+  광고 주소가 전부 여기서 나온다.
 - `kafka.data.path` / `kafka.metadata.path` → Ansible `group_vars/kafka.yml` 의 `kafka_broker_data_dir` /
   `kafka_controller_data_dir` 와 글자 그대로 같아야 한다.
-- `kafka.ports.*` → 노드에서 유일해야 한다(hostNetwork). 302-monitoring 은 포트 번호가 아니라 이름 `metrics` 로 긁는다.
-- `schemaRegistryPort` · `kafkaUiHost` → 300 이 URL 문자열(`SCHEMA_REGISTRY_URL`·`KAFKA_UI_URL`) 조립용 복사본을 갖는다.
+- `global.kafka.ports.*` → 노드에서 유일해야 한다(hostNetwork). 302-monitoring 은 포트 번호가 아니라
+  이름 `metrics` 로 긁는다.
 
 ### 규칙 예외 (문서화된 의도)
 
@@ -88,12 +139,12 @@ kafka-0          kafka-1          kafka-2        ← 브로커 ID = 파드 ordin
 ## 설치
 
 전제(순서대로):
-1. **Ansible `kafka_prereq`** — `kafka.nodes` 의 노드마다 `/data/kafka-broker`·`/data/kafka-controller`
+1. **Ansible `kafka_prereq`** — `global.kafka.brokers` 의 노드마다 `/data/kafka-broker`·`/data/kafka-controller`
    (root:root **2770** — `group_vars/kafka.yml` 의 `kafka_data_mode`). 없으면 그 노드의 파드가 마운트 실패로 멈춘다.
 2. **노드 포트** 9092/9093/9094/9404 가 비어 있을 것 — `ss -lnt | grep -E ':(909[2-4]|9404)$'` 가 빈 출력.
 3. **Harbor 이미지** — `data_pipeline/scripts/build_and_push.sh v0.1.0 kafka kafka-ui kafka-exporter schema-registry`.
-4. **300-data-layer-base install** — 네임스페이스·공용 ConfigMap/Secret. 300 의 `global.kafkaBootstrap` 이 이 차트의
-   bootstrap 주소를 가리켜야 도구 3종·파이프라인이 붙는다.
+4. **300-data-layer-base install** — 네임스페이스·공용 ConfigMap/Secret. 공용 ConfigMap 의 `KAFKA_BOOTSTRAP` 도
+   같은 `global.kafka.brokers` 에서 조립되므로 이 차트와 자동으로 같은 주소다.
 5. **노드 실사용 메모리** — 브로커(힙 1g + 네이티브 ≈ 1.5GB RSS)는 PV 때문에 반드시 그 노드에 뜬다. control-plane ap 는
    requests 없는 프로세스(apiserver·etcd·cilium·longhorn)가 실사용을 채우고 있으니 `free -m` 으로 노드마다
    MemAvailable ≥ 2GB 를 확인한다. 부족하면 `kafka.heap` 을 768m 로 낮춘다.
@@ -102,9 +153,9 @@ release 를 `data-layer` 에 두는 이유: 300 과 달리 네임스페이스가
 그 안에 있다(StorageClass·PV 는 클러스터 범위지만 기록 위치와 무관).
 
 ```bash
-helm lint 301-kafka                                        # 문법 + 스키마 검사
-helm template kafka ./301-kafka                            # 미리보기 (클러스터 접근 없음)
-helm install kafka ./301-kafka -n data-layer               # 토픽 Job(hook)이 끝나야 돌아온다 — 브로커 3대 기동 포함 수 분
+helm lint 301-kafka -f values.common.yaml                                        # 문법 + 스키마 검사
+helm template kafka ./301-kafka -f values.common.yaml                            # 미리보기 (클러스터 접근 없음)
+helm install kafka ./301-kafka -f values.common.yaml -n data-layer --timeout 15m # 토픽 Job(hook)이 끝나야 돌아온다 — helm 기본 5m 은 Job 예산(activeDeadlineSeconds 900)보다 짧다
 
 # 확인
 kubectl -n data-layer get pod -l app=kafka -o wide         # kafka-0@ap / kafka-1@s1 / kafka-2@s2, IP = 노드 IP
@@ -122,30 +173,42 @@ hostNetwork 라 클러스터 밖에서는 **노드 IP:9092** 로 직접 붙는�
 전부 적는다(한 대 죽어도 붙는다). 클라이언트는 bootstrap 뒤 브로커가 광고한 노드 IP 로 직접 간다.
 
 ```bash
-kafka-console-consumer.sh --bootstrap-server 192.168.0.38:9092,192.168.0.39:9092,192.168.0.40:9092 --topic cdm-topic --from-beginning
+kafka-console-consumer.sh --bootstrap-server 192.168.56.38:9092,192.168.56.39:9092,192.168.56.40:9092 --topic cdm-topic --from-beginning
 ```
 
-클러스터 안 워크로드는 공용 ConfigMap 의 `KAFKA_BOOTSTRAP`(`kafka.data-layer.svc.cluster.local:9092`)을 쓴다 —
-Service 는 readiness 통과한 브로커만 엔드포인트로 두므로 죽은 브로커로 첫 접속을 보내지 않는다.
+클러스터 안 워크로드도 공용 ConfigMap 의 `KAFKA_BOOTSTRAP` — 노드 IP 목록이라 안팎이 같은 주소다.
+브로커 한 대가 죽으면 클라이언트가 목록의 다음 주소로 넘어간다(bootstrap 은 다중 주소 전제).
 
 ## 일상 운영
 
 ```bash
-helm lint 301-kafka
-helm template kafka 301-kafka | kubectl diff -f -               # 라이브와 대조
-helm upgrade kafka ./301-kafka -n data-layer                    # 값 반영 — 브로커 파드는 OnDelete 라 아래 '롤링 재기동' 필요
+helm lint 301-kafka -f values.common.yaml
+helm template kafka 301-kafka -f values.common.yaml | kubectl diff -f -               # 라이브와 대조
+helm upgrade kafka ./301-kafka -f values.common.yaml -n data-layer --timeout 15m      # 값 반영 — 브로커 파드는 OnDelete 라 아래 '롤링 재기동' 필요
 kubectl -n data-layer logs kafka-0 --tail=100                   # 기동 로그 (== kafka-0 roles=… advertised=… == 로 시작)
 ```
 
 - **`helm uninstall`** 은 StatefulSet·Service·PV 오브젝트를 지운다. PVC(volumeClaimTemplates)와 디스크 데이터는 남는다 —
   재설치 시 PV 가 다시 생기고 같은 PVC 이름에 `claimRef` 로 묶이므로 데이터가 이어진다(같은 `clusterId` 전제).
+  ⚠ **다만 PVC 를 먼저 지워야 한다.** PV 는 Helm 소유(`managed-by: Helm`)라 uninstall 이 지우지만
+  PVC 는 StatefulSet 이 만든 것이라 Helm 이 모른다 — 남은 PVC 가 `pv-protection` 파이널라이저로 PV 를 붙잡아
+  PV 가 `Terminating` 에서 멈추고, 재설치해도 그 PVC 는 죽은 PV 이름(`spec.volumeName`)을 물고 있어 새 PV 에 다시 붙지 않는다:
+  `kubectl -n data-layer delete pvc -l app.kubernetes.io/part-of=data-layer` 로 PVC 를 먼저 지운 뒤 재설치한다
+  (`Retain` 이라 노드 디스크의 실제 데이터는 그대로 남고, `--ignore-formatted` 가 기존 포맷을 유지한다).
   데이터를 버리려면 PVC 삭제 + 노드 디렉토리 비우기.
+  hook Job `kafka-topics` 는 release manifest 가 아니라 hook 이라 uninstall 이 지우지 않는다 —
+  `kubectl -n data-layer delete job kafka-topics --ignore-not-found` 를 함께 돈다
+  (재설치는 `before-hook-creation` 이 알아서 지우므로 막히지는 않는다).
+- **`podManagementPolicy`·`serviceName` 은 불변이다.** StatefulSet 은 `replicas`/`ordinals`/`template`/`updateStrategy`/
+  `revisionHistoryLimit`/`persistentVolumeClaimRetentionPolicy`/`minReadySeconds` 외의 spec 변경을 `spec: Forbidden` 으로 거부한다.
+  `kubectl -n data-layer delete statefulset kafka --cascade=orphan` 으로 STS 오브젝트만 지우고
+  (파드·PVC·PV 는 남는다) 다시 `helm upgrade` 하면 같은 라벨의 파드를 그대로 입양한다 — 브로커는 재기동되지 않는다.
 - **파티션 수 변경 금지**(`numPartitions`) — 프로듀서가 `hash(key) % 파티션` 으로 파티션을 고르므로 순서 보장이 깨진다.
 - **`clusterId` 변경 금지** — 디스크의 `meta.properties` 와 충돌해 브로커가 뜨지 않는다(= 데이터 초기화가 전제).
 - Kafka 버전 업: `data_layer_kafka/Dockerfile` 의 FROM → push → `global.imageTag` → 롤링 재기동. KRaft
   `metadata.version` 은 `kafka-features.sh upgrade --metadata <ver>` 로 별도(브로커 전부 새 버전이 된 뒤).
 - CLI: `kubectl -n data-layer exec kafka-0 -- /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list`
-  (`data_pipeline/data_layer_kafka/*.sh` 래퍼의 `POD`/`BOOTSTRAP` 도 이 이름을 가리킨다). 브로커의 힙·javaagent 는
+  (`data_pipeline/data_layer_kafka/kafka.conf` 의 `POD`/`BOOTSTRAP` 도 같은 값 — 파드 안에서 도니 svc 이름이 필요 없다). 브로커의 힙·javaagent 는
   파드 env 가 아니라 기동 스크립트 안에서만 `export` 되므로 exec 로 띄운 CLI JVM 은 그것을 물려받지 않는다
   (물려받으면 javaagent 가 9404 를 또 열다 JVM 이 죽는다 — 파드 env 로 되돌리지 말 것).
 
@@ -162,8 +225,12 @@ for i in 2 1 0; do                                                           # �
 done
 ```
 
-`kubectl get pod kafka-N -o jsonpath='{.metadata.annotations.checksum/config}'` 와 STS 템플릿의 값이 다르면 아직 반영
-안 된 파드다.
+설정 ConfigMap(`kafka-config`·`kafka-jmx-exporter`)은 **300-data-layer-base 소유**라 파드에 설정 해시가 없다.
+반영 여부는 마운트된 파일을 직접 본다:
+
+```bash
+kubectl -n data-layer exec kafka-0 -- grep quorum.voters /opt/kafka-config/server.properties.tpl
+```
 
 ## PV 재사용 (Released → Available)
 
@@ -177,11 +244,11 @@ kubectl patch pv kafka-data-s1 --type=json -p '[{"op":"remove","path":"/spec/cla
 # 데이터를 버릴 때: 그 노드의 디렉토리를 비운 뒤 같은 patch
 ```
 
-PV 오브젝트는 helm 릴리스 소유라 `helm upgrade` 가 표(`kafka.nodes`)에 따라 만들고 지운다.
+PV 오브젝트는 helm 릴리스 소유라 `helm upgrade` 가 표(`global.kafka.brokers`)에 따라 만들고 지운다.
 
 ## 노드 장애
 
-전제: 오퍼레이터가 없으니 "선언 ↔ 실체" 도 사람이 맞춘다. 사람이 하는 일은 **표(`kafka.nodes`) 수정 + 죽은 노드의
+전제: 오퍼레이터가 없으니 "선언 ↔ 실체" 도 사람이 맞춘다. 사람이 하는 일은 **표(`global.kafka.brokers`) 수정 + 죽은 노드의
 파드/PVC 정리 + 롤링 재기동 + 복제 확인**이다. 노드 IP 가 광고 주소이자 쿼럼 voter 라, 노드가 바뀌면 전 브로커의
 `controller.quorum.voters` 가 바뀐다 — 그래서 롤링이 들어간다(2번 이유 — 네트워크 identity).
 
@@ -197,9 +264,9 @@ PV 오브젝트는 helm 릴리스 소유라 `helm upgrade` 가 표(`kafka.nodes`
  ↓
 1. 새 노드 준비   Ansible: k8s join → kafka_prereq (디렉토리 2종, 2770)              ← 디렉토리가 먼저다
  ↓
-2. 표 교체        values kafka.nodes[1]: {name: s1, ip: 192.168.0.39} → {name: s3, ip: 192.168.0.41} → helm upgrade
+2. 표 교체        values.common global.kafka.brokers[1]: {name: s1, ip: 192.168.56.39} → {name: s3, ip: 192.168.56.41} → helm upgrade
                   → PV kafka-{data,metadata}-s1 삭제, kafka-{data,metadata}-s3 생성(claimRef data-kafka-1) — 아직 옛 PVC 가 붙어 있어 Pending
-                  → ConfigMap 의 controller.quorum.voters 가 1@192.168.0.41 로 바뀜 (파드는 OnDelete 라 그대로)
+                  → ConfigMap 의 controller.quorum.voters 가 1@192.168.56.41 로 바뀜 (파드는 OnDelete 라 그대로)
  ↓
 3. 옛 PVC 정리    kubectl -n data-layer delete pvc data-kafka-1 metadata-kafka-1   (PV 가 사라져 Lost 상태 — 데이터는 죽은 노드에 있었음)
                   kubectl -n data-layer delete pod kafka-1                          → STS 가 PVC 를 다시 만들고 s3 PV 에 바인딩 → kafka-1 이 s3 에서 빈 디스크로 기동
@@ -223,10 +290,10 @@ PV 오브젝트는 helm 릴리스 소유라 `helm upgrade` 가 표(`kafka.nodes`
 컨트롤러 겸용은 앞 3개(`controllers`)로 고정이고, 4번째부터는 broker 전용으로 붙는다. 파티션 재배치는 사람이 한다.
 
 ```
-증설: kafka_prereq(s3) → values kafka.nodes 뒤에 {name: s3, ip: …} 추가 → helm upgrade → kafka-3 기동 (빈 브로커, roles=broker)
+증설: kafka_prereq(s3) → values.common global.kafka.brokers 뒤에 {name: s3, ip: …} 추가 → helm upgrade → kafka-3 기동 (빈 브로커, roles=broker)
       → 기존 파티션을 옮기려면 kafka-reassign-partitions.sh (--generate → --execute → --verify) — 안 옮기면 새 토픽/파티션만 s3 로 간다
 축소: 뺄 브로커(가장 큰 ordinal)의 파티션을 먼저 다른 브로커로 재배치(--verify 로 완료 확인)
-      → values kafka.nodes 에서 마지막 항목 삭제 → helm upgrade → STS 가 kafka-3 종료, PV 삭제 → PVC data-kafka-3 수동 삭제
+      → values.common global.kafka.brokers 에서 마지막 항목 삭제 → helm upgrade → STS 가 kafka-3 종료, PV 삭제 → PVC data-kafka-3 수동 삭제
 ```
 
 StatefulSet 은 ordinal 뒤에서부터만 줄어든다 — 중간 브로커를 빼는 것은 '노드 장애 [B]' 의 교체 절차다. `controllers`

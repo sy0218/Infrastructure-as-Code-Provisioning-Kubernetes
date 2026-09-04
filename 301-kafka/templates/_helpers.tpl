@@ -1,26 +1,17 @@
 {{/*
-브로커 bootstrap 주소(클러스터 안) — bootstrap Service <kafka.name>.<ns>.svc.cluster.local:<clientPort>.
-이 차트 안에서 브로커 주소가 필요한 곳(도구 3종의 롤아웃 checksum·토픽 Job)은 전부 이 헬퍼를 쓴다.
-300-data-layer-base 의 global.kafkaBootstrap 은 이 값의 복사본이다(같은 커밋 규칙).
+Kafka Broker Bootstrap 주소를 생성한다.
+
+- 모든 Broker의 Node IP:Client Port를 쉼표로 연결
+- Broker가 hostNetwork를 사용하므로 광고 주소와 동일한 Node IP를 사용
+- Broker 장애 시 클라이언트는 다음 Bootstrap 주소로 연결 시도
+- 300-data-layer-base와 동일한 global.kafka.brokers를 원본으로 사용
+  → Bootstrap 주소가 차트 간 불일치하지 않음
 */}}
 {{- define "kafka.bootstrap" -}}
-{{- printf "%s.%s.svc.cluster.local:%d" .Values.kafka.name .Values.global.namespace (int .Values.kafka.ports.client) -}}
-{{- end -}}
-
-{{/*
-브로커 bootstrap 주소(클러스터 밖) — hostNetwork 라 노드 IP:클라이언트 포트 그대로. nodes 표 전부를 나열한다.
-*/}}
-{{- define "kafka.bootstrapExternal" -}}
+{{- $port := int .Values.global.kafka.ports.client -}}
 {{- $l := list -}}
-{{- range .Values.kafka.nodes }}{{ $l = append $l (printf "%s:%d" .ip (int $.Values.kafka.ports.client)) }}{{ end -}}
-{{- join "," $l -}}
+{{- range .Values.global.kafka.brokers }}
+{{- $l = append $l (printf "%s:%d" .ip $port) }}
 {{- end -}}
-
-{{/*
-controller.quorum.voters — nodes 표의 앞 controllers 개: "<id>@<ip>:<controllerPort>,…". 정적 쿼럼이라 전 브로커에 같은 값.
-*/}}
-{{- define "kafka.quorumVoters" -}}
-{{- $l := list -}}
-{{- range $i, $n := .Values.kafka.nodes }}{{ if lt $i (int $.Values.kafka.controllers) }}{{ $l = append $l (printf "%d@%s:%d" $i $n.ip (int $.Values.kafka.ports.controller)) }}{{ end }}{{ end -}}
 {{- join "," $l -}}
 {{- end -}}
