@@ -1,0 +1,215 @@
+# =====================================================
+# Prometheus 스크랩 설정 → ConfigMap
+# =====================================================
+# Prometheus가 어떤 메트릭을 어디서 수집할지 정의한다.
+#
+# 흐름:
+# ConfigMap
+#   → /etc/prometheus/prometheus.yml로 마운트
+#   → Prometheus가 --config.file로 읽음
+#   → Kubernetes Service/Pod를 자동 발견
+#   → 각 메트릭 엔드포인트를 Scrape
+#
+# 설정은 이미지와 분리한다.
+# → 설정 변경 시 이미지 재빌드 없이 Helm upgrade로 반영
+#
+# Scrape 대상:
+# - alloy-node     : 서버 리소스
+# - alloy-cadvisor : 컨테이너 리소스
+# - kafka-exporter : Kafka 토픽 / Offset / Consumer Lag
+# - kafka-jmx      : Kafka Broker JVM / JMX
+# - postgres       : PostgreSQL 인스턴스 메트릭
+# - cnpg-operator  : CloudNativePG 오퍼레이터(조정 루프) — 유일하게 cnpg-system 을 본다
+# =====================================================
+
+apiVersion: v1
+kind: ConfigMap
+
+metadata:
+  name: prometheus-config
+  namespace: {{ .Values.global.namespace }}
+
+  labels:
+    app: prometheus
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/part-of: data-layer
+
+data:
+  # ConfigMap의 key가 Pod 내부 파일명으로 사용된다.
+  # StatefulSet의 --config.file 경로와 일치해야 한다.
+  prometheus.yml: |
+
+    # -------------------------------------------------
+    # 공통 설정
+    # -------------------------------------------------
+    global:
+      scrape_interval: {{ .Values.global.prometheus.scrapeInterval }}
+
+
+    scrape_configs:
+
+      # -------------------------------------------------
+      # Node 메트릭
+      # -------------------------------------------------
+      # Alloy가 수집한 서버 CPU / Memory / Disk 등을 Scrape한다.
+      - job_name: alloy-node
+        metrics_path: {{ .Values.global.alloy.nodeMetricsPath }}
+
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names: [{{ .Values.global.namespace }}]
+
+        relabel_configs:
+          # Alloy의 metrics 포트만 대상으로 선택한다.
+          - source_labels: [__meta_kubernetes_pod_label_app, __meta_kubernetes_pod_container_port_name]
+            regex: alloy;http-metrics
+            action: keep
+
+          # 대시보드에서 노드/Pod 기준으로 조회할 수 있도록 라벨을 추가한다.
+          - source_labels: [__meta_kubernetes_pod_node_name]
+            target_label: node
+
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+
+
+      # -------------------------------------------------
+      # Container 메트릭
+      # -------------------------------------------------
+      # Alloy(cAdvisor)가 수집한 컨테이너 CPU / Memory /
+      # Disk I/O / Network 메트릭을 Scrape한다.
+      - job_name: alloy-cadvisor
+        metrics_path: {{ .Values.global.alloy.cadvisorMetricsPath }}
+
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names: [{{ .Values.global.namespace }}]
+
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app, __meta_kubernetes_pod_container_port_name]
+            regex: alloy;http-metrics
+            action: keep
+
+          - source_labels: [__meta_kubernetes_pod_node_name]
+            target_label: node
+
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+
+        metric_relabel_configs:
+          # 컨테이너가 아닌 cgroup 루트 메트릭은 제외한다.
+          - source_labels: [name]
+            regex: ""
+            action: drop
+
+
+      # -------------------------------------------------
+      # Kafka Exporter
+      # -------------------------------------------------
+      # Kafka 토픽 / Offset / Consumer Group Lag을 수집한다.
+      # Exporter 하나가 Kafka 클러스터 전체를 조회한다.
+      - job_name: kafka-exporter
+
+        kubernetes_sd_configs:
+          - role: endpoints
+            namespaces:
+              names: [{{ .Values.global.namespace }}]
+
+        relabel_configs:
+          # kafka-exporter Service의 metrics 포트만 대상으로 선택한다.
+          - source_labels: [__meta_kubernetes_service_name, __meta_kubernetes_endpoint_port_name]
+            regex: kafka-exporter;metrics
+            action: keep
+
+          - source_labels: [__meta_kubernetes_pod_node_name]
+            target_label: node
+
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+
+
+      # -------------------------------------------------
+      # PostgreSQL
+      # -------------------------------------------------
+      # CNPG 각 PostgreSQL 인스턴스의 메트릭을 수집한다.
+      - job_name: postgres
+
+        kubernetes_sd_configs:
+          - role: endpoints
+            namespaces:
+              names: [{{ .Values.global.namespace }}]
+
+        relabel_configs:
+          # PostgreSQL metrics Service의 metrics 포트만 대상으로 선택한다.
+          - source_labels: [__meta_kubernetes_service_name, __meta_kubernetes_endpoint_port_name]
+            regex: data-layer-postgres-metrics;metrics
+            action: keep
+
+          - source_labels: [__meta_kubernetes_pod_node_name]
+            target_label: node
+
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+
+          # CNPG의 primary / replica 역할을 라벨로 추가한다.
+          - source_labels: [__meta_kubernetes_pod_label_cnpg_io_instanceRole]
+            target_label: role
+
+
+      # -------------------------------------------------
+      # CNPG Operator
+      # -------------------------------------------------
+      # PostgreSQL 인스턴스가 아닌 CNPG Operator 자체의 상태를 모니터링한다.
+      # Operator 장애 시 Failover / Replica 재생성 등 자동 복구가 동작하지 않는다.
+      # CNPG Operator는 cnpg-system 네임스페이스에 있다.
+      - job_name: cnpg-operator
+
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names: [cnpg-system]
+
+        relabel_configs:
+          # CNPG Operator의 metrics 포트만 수집
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name, __meta_kubernetes_pod_container_port_name]
+            regex: cloudnative-pg;metrics
+            action: keep
+
+          # Pod가 실행 중인 Node 정보
+          - source_labels: [__meta_kubernetes_pod_node_name]
+            target_label: node
+
+          # Pod 이름
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+
+
+      # -------------------------------------------------
+      # Kafka JMX
+      # -------------------------------------------------
+      # Kafka Broker의 JVM / JMX 메트릭을 수집한다.
+      # JMX Exporter Java Agent가 :9404에서 메트릭을 노출한다.
+      - job_name: kafka-jmx
+
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names: [{{ .Values.global.namespace }}]
+
+        relabel_configs:
+          # Kafka Broker의 metrics 포트만 대상으로 선택한다.
+          - source_labels: [__meta_kubernetes_pod_label_app, __meta_kubernetes_pod_container_port_name]
+            regex: kafka;metrics
+            action: keep
+
+          - source_labels: [__meta_kubernetes_pod_node_name]
+            target_label: node
+
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+
+          # kafka-0 / kafka-1 / kafka-2를 instance로 사용한다.
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: instance

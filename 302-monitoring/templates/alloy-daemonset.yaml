@@ -1,227 +1,175 @@
 # ===============================================
-# [Alloy DaemonSet]
+# [Alloy → DaemonSet]
 #
-# - Kubernetes의 각 노드마다 Alloy 1개씩 실행한다.
-# - Alloy가 노드와 컨테이너의 메트릭을 수집해서 제공한다.
-# - 메트릭을 저장하지는 않는다.
-# - Prometheus가 Alloy의 메트릭을 가져간다.
-#
-# [구조]
+# 각 Node에 Alloy Pod를 1개씩 배치하여
+# Node / Container 메트릭을 수집한다.
 #
 # Node 1 ── Alloy ──┐
 # Node 2 ── Alloy ──┼──→ Prometheus
 # Node 3 ── Alloy ──┘
 #
-# DaemonSet이므로 노드가 추가되면 Alloy도 자동으로 추가된다.
+# - DaemonSet       → Node마다 Alloy 1개 실행
+# - hostNetwork     → Node 네트워크 사용
+# - hostPath        → Node의 /proc, /sys, rootfs, containerd 접근
+# - Prometheus      → Alloy의 메트릭 Endpoint를 Scrape
+# - 별도 저장소 없음 → 메트릭은 Prometheus가 저장
+#
+# Node가 추가되면 Alloy도 자동으로 배포된다.
 # ===============================================
-
 apiVersion: apps/v1
 kind: DaemonSet
 
-# ===============================================
-# [DaemonSet 자기 자신의 metadata]
-# ===============================================
 metadata:
-  name: alloy # DaemonSet 이름
-  namespace: {{ .Values.global.namespace }} # DaemonSet 실행할 Namespace
-
-  # DaemonSet(워크로드 리소스) 라벨
+  name: alloy
+  namespace: {{ .Values.global.namespace }}
   labels:
     app: alloy
     app.kubernetes.io/name: alloy
     app.kubernetes.io/part-of: data-layer
 
 spec:
-
-  # ===============================================
-  # [DaemonSet이 관리할 Pod를 선택하는 조건]
-  #   → app=apply 라벨이 붙은 Pod를 이 DaemonSet이 관리 대상으로 삼는다.
-  # ===============================================
+  # Alloy Pod를 식별하는 Label
   selector:
     matchLabels:
       app: alloy
 
-  # ================================
+  # =============================================
   # [Pod Template]
-  #   - 워크로드 리소스(데몬셋)가 만들어 낼 Pod의 설계도
-  #   → 데몬셋 : "내가 생성할 Pod는 이렇게 생김~"
-  # ================================
+  # DaemonSet이 각 Node에 생성할 Pod 정의
+  # =============================================
   template:
-
-    # =============================================
-    # [생성될 Pod의 metadata]
-    # =============================================
     metadata:
-
-      # 생성할 Pod의 라벨
-      # → spec.selector.matchLabels 의 app:alloy 와 연결된다.
       labels:
         app: alloy
         app.kubernetes.io/name: alloy
         app.kubernetes.io/part-of: data-layer
 
-
-      # alloy-config.yaml 내용이 변경되면 해시값도 바뀐다.
-      # 해시값이 바뀌면 Pod 설정이 변경된 것으로 판단되어
-      #   → DaemonSet이 Alloy Pod를 새로 만들어 변경된 설정을 적용한다.
       annotations:
-        checksum/config: {{ include (print $.Template.BasePath "/alloy-config.yaml") . | sha256sum | quote }}
-    
-    
-    # =============================================
-    # [여기부터 실제 Pod의 spec]
-    # =============================================
-    spec:
+        # alloy-config 가 같은 릴리스라 해시를 계산할 수 있다
+        # → 설정이 바뀌면 helm upgrade 만으로 롤아웃된다(수동 rollout restart 불필요).
+        checksum/config: {{ include (print $.Template.BasePath "/configmap-alloy.yaml") . | sha256sum }}
 
-      # Service env 자동 주입 차단
+    spec:
+      # Kubernetes Service 환경변수 자동 주입 방지
       enableServiceLinks: false
 
       # ===========================================
-      # [Node 네트워크 사용]
-      # ===========================================
-      # → 실제 노드 네트워크 인터페이스 정보를 수집해야 하기 때문에 사용한다.
+      # [Node Network]
+      # Node의 네트워크를 직접 사용
       # ===========================================
       hostNetwork: true
 
-      # hostNetwork: true를 사용하면서 쿠버네티스 내부 DNS를 사용할 수 있도록한다.
+      # hostNetwork 사용 시에도 Cluster DNS 사용
       dnsPolicy: ClusterFirstWithHostNet
 
-
       # ===========================================
-      # [Control Plane에도 Alloy 실행]
-      # ===========================================
-      # - 쿠버네티스 컨트롤 플레인 노드에는 보통 NoSchedule taint가 있다.
-      # - tolerations를 추가하여 Control Plane Node에도 Alloy Pod가 올라갈 수 있다.
+      # [Control Plane 실행 허용]
+      # Control Plane의 NoSchedule Taint 허용
       # ===========================================
       tolerations:
         - key: node-role.kubernetes.io/control-plane
           operator: Exists
           effect: NoSchedule
 
-      # ===========================================
-      # [Alloy Container]
-      # ===========================================
       containers:
-        - name: alloy # 컨테이너 명
-
-          # 실행할 Alloy 컨테이너 이미지
-          # imagePullPolicy: IfNotPresent → 노드에 해당 이미지 있으면 다운 X
-          image: {{ .Values.global.harborRegistry }}/data-layer/alloy:{{ .Values.imageTag }}
+        - name: alloy
+          image: {{ .Values.global.harborRegistry }}/data-layer/alloy:{{ .Values.global.imageTag }}
           imagePullPolicy: IfNotPresent
 
-          # ========================================
-          # [Container 권한]
-          #   → Alloy가 Node의 /proc, /sys, cgroup 등을 읽어야 하기에 높은 권한으로 실행
-          # =======================================
+          # Node의 시스템 정보를 수집하기 위해 Host 자원에 대한 높은 권한이 필요
           securityContext:
             privileged: true
 
           # ========================================
-          # [Alloy 실행 명령]
+          # [Alloy 실행]
           # ========================================
           command: ["/bin/alloy"]
           args:
             - run
             - --server.http.listen-addr=0.0.0.0:{{ .Values.alloy.port }}
             - /etc/alloy/config.alloy
-          
 
-          # ========================================
-          # [Alloy Metrics Port]
-          # ========================================
+          # Prometheus가 Scrape할 Metrics Endpoint
           ports:
-            # 포트에 붙이는 이름이다.
-            # → Prometheus가 Service Discovery에서 이 이름을 사용할 수 있다.
             - name: http-metrics
               containerPort: {{ .Values.alloy.port }}
               protocol: TCP
 
-          # ========================================
-          # [리소스]
-          #   → Alloy Pod가 스케줄링될 때
-          #   최소한 확보해야 하는 CPU / Memory
-          # ========================================
           resources:
             requests:
               cpu: "100m"
               memory: "128Mi"
 
-          # ========================================
-          # [준비상태]
-          #   → 이 Alloy Pod가 현재 정상적으로 메트릭을 제공할 준비가 되었는가?
-          # ========================================
+          # Alloy가 메트릭을 제공할 준비가 되었는지 확인
           readinessProbe:
             httpGet:
-              path: {{ .Values.alloy.nodeMetricsPath }}
+              path: {{ .Values.global.alloy.nodeMetricsPath }}
               port: http-metrics
             initialDelaySeconds: 20
             periodSeconds: 30
             timeoutSeconds: 5
             failureThreshold: 5
 
-          # ========================================
-          # [Liveness Probe]
-          #   → liveness가 계속 실패하면 ( kubelet이 컨테이너를 재시작한다. )
-          # ========================================
+          # Alloy 프로세스가 정상 동작하는지 확인
+          # 계속 실패하면 kubelet이 컨테이너를 재시작
           livenessProbe:
             httpGet:
               path: /-/ready
               port: http-metrics
             initialDelaySeconds: 30
-            periodSeconds: 30
+            periodSeconds: 60
             timeoutSeconds: 5
             failureThreshold: 5
 
           volumeMounts:
-            # ========================================
-            # [Volume Mount]
-            # ========================================
-
-            # ConfigMap의 Alloy 설정을 → 컨테이너 내부 /etc/alloy에 연결
+            # Alloy 설정 파일
             - name: config
               mountPath: /etc/alloy
               readOnly: true
 
-            # node exporter → Node의 프로세스/커널 정보를 수집하기 위해 사용
+            # Node 프로세스 / 커널 정보 수집
             - name: proc
               mountPath: /host/proc
               readOnly: true
 
-            # Node의 /sys를 컨테이너에 연결 → Node 정보 및 cgroup 정보 수집에 사용
+            # Node 시스템 / cgroup 정보 수집
             - name: sys
               mountPath: /sys
               readOnly: true
               mountPropagation: HostToContainer
 
-            # Node의 전체 파일시스템(/)을 → 컨테이너의 /rootfs에 연결
-            #   - 파일시스템 사용량 등의 메트릭 수집에 사용
+            # Node 파일시스템 사용량 수집
             - name: rootfs
               mountPath: /rootfs
               readOnly: true
               mountPropagation: HostToContainer
-            
-            # 컨테이너 메타데이터 / 상태 수집에 사용
+
+            # containerd를 통한 Container 정보 수집
             - name: containerd-sock
               mountPath: /run/containerd/containerd.sock
               readOnly: true
 
       # ===========================================
-      # [Volume 정의]
-      #   - 위 volumeMounts에서 사용한 Volume의 실제 원본을 정의한다.
+      # [Host Volume]
+      # 위 volumeMounts에 연결할 Node의 실제 경로
       # ===========================================
       volumes:
-        - name: config
+        - name: config # alloy-config ConfigMap을 → config Volume으로 연결
           configMap:
             name: alloy-config
+
         - name: proc
           hostPath:
             path: /proc
+
         - name: sys
           hostPath:
             path: /sys
+
         - name: rootfs
           hostPath:
             path: /
+
         - name: containerd-sock
           hostPath:
             path: /run/containerd/containerd.sock

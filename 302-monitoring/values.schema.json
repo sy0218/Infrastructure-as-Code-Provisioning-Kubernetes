@@ -1,15 +1,28 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "monitoring values",
-  "description": "원본 302-monitoring 의 'default 없는 변수 = tfvars 강제' 규칙의 Helm 판 — 필수 키 누락·오타·형식 오류를 렌더(lint/template/install) 시점에 잡는다. global 은 루트가 다른 차트용 키까지 통짜로 주입하므로 additionalProperties 를 막지 않는다.",
+  "description": "원본 302-monitoring 의 'default 없는 변수 = tfvars 강제' 규칙의 Helm 판 — 필수 키 누락·오타·형식 오류를 렌더(lint/template/install) 시점에 잡는다. 이 차트가 global 에서 실제로 참조하는 키만 required 로 선언한다(values.common.yaml 을 -f 로 주지 않으면 렌더 전에 실패). global 에는 다른 차트용 키도 함께 들어오므로 additionalProperties 를 막지 않는다.",
   "type": "object",
   "additionalProperties": true,
-  "required": ["global", "imageTag", "alloy", "prometheus", "grafana"],
+  "required": [
+    "global",
+    "alloy",
+    "prometheus",
+    "grafana"
+  ],
   "properties": {
     "global": {
       "type": "object",
       "additionalProperties": true,
-      "required": ["namespace", "harborRegistry"],
+      "required": [
+        "namespace",
+        "harborRegistry",
+        "imageTag",
+        "ingressClassName",
+        "hosts",
+        "alloy",
+        "prometheus"
+      ],
       "properties": {
         "namespace": {
           "type": "string",
@@ -21,47 +34,99 @@
           "type": "string",
           "description": "스킴 없는 레지스트리 주소 — 밑줄 금지(Docker 이미지 참조 파서의 domain 규칙)",
           "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(:[0-9]+)?$"
+        },
+        "imageTag": {
+          "type": "string",
+          "description": "불변 태그 — build_and_push.sh 에 넘긴 값과 같아야 한다",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+        },
+        "ingressClassName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "hosts": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Ingress 호스트 — grafana 는 300 의 GRAFANA_URL/GF_SERVER_ROOT_URL 과 같은 값이어야 iframe 임베드가 뜬다(같은 global 에서 오므로 어긋날 수 없다)",
+          "required": [
+            "grafana",
+            "prometheus"
+          ],
+          "properties": {
+            "grafana": {
+              "type": "string",
+              "description": "호스트명 라벨 — 밑줄 금지",
+              "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+            },
+            "prometheus": {
+              "type": "string",
+              "description": "호스트명 라벨 — 밑줄 금지",
+              "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+            }
+          }
+        },
+        "alloy": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "300 이 렌더하는 config.alloy / prometheus.yml 이 참조하는 경로. alloy DaemonSet 의 readinessProbe 도 nodeMetricsPath 를 쓴다",
+          "required": [
+            "nodeMetricsPath",
+            "cadvisorMetricsPath"
+          ],
+          "properties": {
+            "nodeMetricsPath": {
+              "type": "string",
+              "pattern": "^/.+"
+            },
+            "cadvisorMetricsPath": {
+              "type": "string",
+              "pattern": "^/.+"
+            }
+          }
+        },
+        "prometheus": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "이 차트가 렌더하는 prometheus.yml 이 참조하는 값",
+          "required": [
+            "scrapeInterval"
+          ],
+          "properties": {
+            "scrapeInterval": {
+              "type": "string",
+              "description": "Prometheus duration 형식 (예: 30s, 1m)",
+              "pattern": "^[0-9]+(ms|s|m|h|d|w|y)$"
+            }
+          }
         }
       }
-    },
-    "imageTag": {
-      "type": "string",
-      "description": "불변 태그 — build_and_push.sh 에 넘긴 값과 같아야 한다",
-      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
     },
     "alloy": {
       "type": "object",
       "description": "키 오타가 조용히 기본값으로 남지 않도록 추가 키를 막는다",
       "additionalProperties": false,
-      "required": ["port", "nodeMetricsPath", "cadvisorMetricsPath"],
+      "required": [
+        "port"
+      ],
       "properties": {
         "port": {
           "type": "integer",
           "description": "hostNetwork 라 노드의 포트를 그대로 점유한다",
           "minimum": 1,
           "maximum": 65535
-        },
-        "nodeMetricsPath": {
-          "type": "string",
-          "description": "config.alloy 의 컴포넌트 이름과 결합 — Prometheus 스크랩 경로이자 readinessProbe 경로",
-          "pattern": "^/.+"
-        },
-        "cadvisorMetricsPath": {
-          "type": "string",
-          "pattern": "^/.+"
         }
       }
     },
     "prometheus": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["scrapeInterval", "retention", "storageSize", "storageClass", "port", "host"],
+      "required": [
+        "retention",
+        "storageSize",
+        "storageClass",
+        "port"
+      ],
       "properties": {
-        "scrapeInterval": {
-          "type": "string",
-          "description": "Prometheus duration 형식 (예: 30s, 1m)",
-          "pattern": "^[0-9]+(ms|s|m|h|d|w|y)$"
-        },
         "retention": {
           "type": "string",
           "pattern": "^[0-9]+(ms|s|m|h|d|w|y)$"
@@ -71,30 +136,58 @@
           "description": "K8s 수량 형식 (예: 20Gi)",
           "pattern": "^[0-9]+(Ei|Pi|Ti|Gi|Mi|Ki)$"
         },
-        "storageClass": { "type": "string", "minLength": 1 },
-        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
-        "host": {
+        "storageClass": {
           "type": "string",
-          "description": "호스트명 라벨 — 밑줄 금지(원본 '호스트명에 밑줄을 쓰지 않는다' 규칙)",
-          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+          "minLength": 1
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "nodeNames": {
+          "type": "array",
+          "description": "파드를 배치할 노드 후보 → nodeAffinity kubernetes.io/hostname In. 여러 개면 그 중 한 곳에 뜬다(replicas 1)",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
         }
       }
     },
     "grafana": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["storageSize", "storageClass", "port", "host"],
+      "required": [
+        "storageSize",
+        "storageClass",
+        "port"
+      ],
       "properties": {
         "storageSize": {
           "type": "string",
           "pattern": "^[0-9]+(Ei|Pi|Ti|Gi|Mi|Ki)$"
         },
-        "storageClass": { "type": "string", "minLength": 1 },
-        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
-        "host": {
+        "storageClass": {
           "type": "string",
-          "description": "300-data-layer-base 의 grafanaHost(GRAFANA_URL)와 같아야 iframe 임베드가 뜬다",
-          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+          "minLength": 1
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "nodeNames": {
+          "type": "array",
+          "description": "파드를 배치할 노드 후보 → nodeAffinity kubernetes.io/hostname In. 여러 개면 그 중 한 곳에 뜬다(replicas 1)",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
         }
       }
     }

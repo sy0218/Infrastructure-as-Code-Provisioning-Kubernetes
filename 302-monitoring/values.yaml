@@ -1,21 +1,15 @@
 # ===============================================
-# [Monitoring Values]
+# [values.yaml → 302-monitoring 이 소유하는 값만]
 #
-# - 모니터링 스택의 설정값
-# - Alloy → 서버/컨테이너 메트릭 수집
+# 공통값(global.*)은 → 저장소 루트 values.common.yaml 에 정의합니다.
+#   helm install monitoring ./302-monitoring -f values.common.yaml -n data-layer
+#
+# Ingress 호스트는 global.hosts 에 있다(300 이 GRAFANA_URL·GF_SERVER_ROOT_URL 조립에 같은 값을 쓴다).
+#
+# - Alloy      → 서버/컨테이너 메트릭 수집
 # - Prometheus → 메트릭 저장
-# - Grafana → 메트릭을 화면으로 보여줌
+# - Grafana    → 메트릭을 화면으로 보여줌
 # ===============================================
-global:
-
-  # Kubernetes Namespace
-  namespace: "data-layer"
-
-  # 모니터링 이미지를 가져올 Harbor 주소
-  harborRegistry: "data-layer-harbor:80"
-
-# 사용할 이미지 태그
-imageTag: "v0.1.0"
 
 
 # ===============================================
@@ -25,59 +19,41 @@ imageTag: "v0.1.0"
 # - Prometheus가 Alloy에서 메트릭을 가져간다.
 # ===============================================
 alloy:
-
-  # Alloy가 사용하는 포트
+  # Alloy가 사용하는 포트 (hostNetwork → 노드 포트)
   port: 12345
-
-  # 노드 메트릭을 제공하는 경로
-  nodeMetricsPath: "/api/v0/component/prometheus.exporter.unix.node/metrics"
-
-  # 컨테이너 메트릭을 제공하는 경로
-  cadvisorMetricsPath: "/api/v0/component/prometheus.exporter.cadvisor.containers/metrics"
 
 
 # ===============================================
 # [Prometheus]
-# - Alloy, PostgreSQL, Kafka 등의 메트릭을 수집한다.
-# - 수집한 메트릭을 저장하고 Grafana에 제공한다.
+#   - Alloy, PostgreSQL, Kafka 등의 메트릭을 수집한다.
+#   - 수집한 메트릭을 저장하고 Grafana에 제공한다.
 # ===============================================
 prometheus:
-
-  # 메트릭을 얼마나 자주 수집할지
-  scrapeInterval: "30s"
-
   # 메트릭 보관 기간
   retention: "30d"
 
   # Prometheus 데이터 저장공간
   storageSize: "20Gi"
-
-  # 데이터를 저장할 StorageClass
   storageClass: "longhorn"
 
   # Prometheus 포트
   port: 9090
 
-  # 브라우저에서 접속할 때 사용하는 호스트 이름
-  host: "data-layer-prometheus"
-
-
+  # 파드를 배치할 노드 이름 (nodeAffinity 로 지정된다)
+  nodeNames: ["s1"]
 
 # ===============================================
 # [Grafana]
-# - Prometheus가 저장한 메트릭을 그래프로 보여준다.
-# - 브라우저에서 접속해서 모니터링 화면을 확인한다.
+#   - Prometheus가 저장한 메트릭을 그래프로 보여준다.
+#   - 브라우저에서 접속해서 모니터링 화면을 확인한다.
 # ===============================================
 grafana:
-
   # Grafana 데이터 저장공간
   storageSize: "5Gi"
-
-  # 데이터를 저장할 StorageClass
   storageClass: "longhorn"
 
   # Grafana 포트
   port: 3000
 
-  # 브라우저에서 접속할 때 사용하는 호스트 이름
-  host: "data-layer-grafana"
+  # 파드를 배치할 노드 이름 (nodeAffinity 로 지정된다)
+  nodeNames: ["s2"]

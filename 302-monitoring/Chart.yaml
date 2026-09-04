@@ -10,7 +10,8 @@
 # ===================================================
 apiVersion: v2
 name: monitoring
-description: "모니터링 스택 → Alloy DaemonSet / Prometheus StatefulSet / Grafana Deployment + 각 Service·Ingress·PVC"
+description: "모니터링 스택 → Alloy DaemonSet / Prometheus Deployment / Grafana Deployment + 각 Service·Ingress·PVC"
 type: application
-# 원본 규칙 승계: 버전은 정확 고정, 업그레이드는 숫자를 고치는 커밋으로만.
+
+# Chart 버전 (업그레이드 시 명시적으로 변경)
 version: 0.1.0
