@@ -1,0 +1,75 @@
+# ===============================================
+# [Hadoop Local PV]
+#
+# 구성요소(namenode / journalnode / zookeeper / datanode)마다 nodeNames 의 노드 수만큼 PV 를 만든다.
+# → 2 + 3 + 3 + 3 = 11개 (ZKFC 는 NameNode 사이드카라 디스크가 없다)
+#
+# [핵심]
+# - local PV → 특정 Node 의 로컬 디렉터리 사용
+# - nodeAffinity → PV 와 Node 를 고정
+# - claimRef → StatefulSet 이 만들 PVC 이름(data-<sts>-<ordinal>)에 PV 를 미리 묶는다
+# - Retain → PVC 삭제 시에도 PV/데이터를 유지
+#
+# [결과]
+# - ordinal ↔ PVC ↔ PV ↔ Node 가 고정되어 <sts>-N 은 nodeNames[N] 의 디스크만 쓴다
+# - 파드가 재생성돼도 같은 노드의 기존 데이터를 그대로 이어 쓴다
+#
+# [참고] → 로컬 디렉터리(values hadoop.<구성요소>.path)는 노드에 미리 만들어 둔다 (root:root 2770).
+# ===============================================
+
+{{- $root := . }}
+
+{{- range $comp := list "namenode" "journalnode" "zookeeper" "datanode" }}
+{{- $spec := index $root.Values.hadoop $comp }}
+{{- range $i, $nodeName := (index $root.Values.global.hadoop $comp).nodeNames }}
+
+---
+apiVersion: v1
+kind: PersistentVolume
+
+metadata:
+  # 예: hadoop-namenode-ap / hadoop-datanode-s2
+  name: {{ printf "%s-%s-%s" $root.Values.global.hadoop.name $comp $nodeName }}
+
+  labels:
+    app.kubernetes.io/part-of: data-layer
+    app.kubernetes.io/name: hadoop
+    app.kubernetes.io/component: {{ $comp }}
+    data-layer/hadoop-node: {{ $nodeName }}
+    data-layer/hadoop-ordinal: {{ $i | quote }}
+
+spec:
+  capacity:
+    storage: {{ $spec.size }}
+
+  volumeMode: Filesystem # 파일시스템 형태로 Pod 마운트
+
+  accessModes:
+    - ReadWriteOnce
+
+  # PVC 삭제 후에도 PV 와 실제 데이터를 유지
+  persistentVolumeReclaimPolicy: Retain
+
+  storageClassName: {{ $root.Values.hadoop.storageClass }}
+
+  # 해당 ordinal 의 PVC 에 PV 를 미리 바인딩 (volumeClaimTemplates 이름 data + StatefulSet 이름 + ordinal)
+  claimRef:
+    namespace: {{ $root.Values.global.namespace }}
+    name: {{ printf "data-%s-%s-%d" $root.Values.global.hadoop.name $comp $i }}
+
+  # Node 의 실제 로컬 디렉터리
+  local:
+    path: {{ $spec.path }}
+
+  # Local PV 가 지정된 Node 에서만 사용되도록 고정
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values:
+                - {{ $nodeName }}
+
+{{- end }}
+{{- end }}

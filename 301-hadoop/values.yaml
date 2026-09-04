@@ -1,0 +1,84 @@
+# ===============================================
+# [values.yaml]
+# 301-hadoop 전용 설정
+# 공통값(global.*)은 values.common.yaml에서 관리
+# ===============================================
+
+
+# -----------------------------------------------
+# HDFS HA 클러스터
+# - ZooKeeper / JournalNode / NameNode / DataNode 구성
+# - HDFS 자체 HA / 복제로 데이터 내결함성 보장
+# - Pod ↔ Node ↔ Local PV를 고정하여 다른 노드로 이동하지 않음
+# - NameNode 장애 시 ZKFC가 Standby를 Active로 승격
+# - OnDelete: 운영자가 상태 확인 후 수동 재기동
+# -----------------------------------------------
+hadoop:
+  # 모든 Hadoop 구성요소가 사용하는 공통 이미지
+  imageName: "hadoop"
+
+  # Local PV용 StorageClass
+  storageClass: "hadoop-local"
+
+  # HDFS 클러스터 식별자
+  # [주의] 기존 데이터가 있는 상태에서 변경 금지
+  clusterId: "CID-data-layer"
+
+  # DataNode 블록 복제본 수
+  replication: 3
+
+  # Pod 종료 시 정상 종료 대기 시간
+  terminationGracePeriodSeconds: 60
+
+  # requests 는 당분간 주석 처리 — 노드 메모리 requests 여유가 없어(s1 96%) 그대로는 Pending 이라 스케줄러 검사를 빼고 띄운다.
+  # 대가: QoS 가 BestEffort 라 메모리 압박 시 먼저 evict 된다. 여유가 생기면 주석을 푼다.
+  # NameNode
+  namenode:
+    # 노드 로컬 데이터 경로
+    path: "/data/hadoop-namenode"
+    # Local PV 용량
+    size: "5Gi"
+    # JVM Heap
+    heap: "512m"
+    # resources:
+    #   requests:
+    #     cpu: "250m"
+    #     memory: "768Mi"
+
+  # NameNode HA 전환 담당 사이드카
+  zkfc:
+    heap: "128m"
+    # resources:
+    #   requests:
+    #     cpu: "50m"
+    #     memory: "192Mi"
+
+  # HDFS HA 메타데이터 공유 저장소
+  journalnode:
+    path: "/data/hadoop-journalnode"
+    size: "2Gi"
+    heap: "256m"
+    # resources:
+    #   requests:
+    #     cpu: "100m"
+    #     memory: "384Mi"
+
+  # NameNode 장애 감지 및 HA 쿼럼
+  zookeeper:
+    path: "/data/hadoop-zookeeper"
+    size: "2Gi"
+    heap: "256m"
+    # resources:
+    #   requests:
+    #     cpu: "100m"
+    #     memory: "384Mi"
+
+  # HDFS 블록 저장소
+  datanode:
+    path: "/data/hadoop-datanode"
+    size: "20Gi"
+    heap: "256m"
+    # resources:
+    #   requests:
+    #     cpu: "250m"
+    #     memory: "384Mi"

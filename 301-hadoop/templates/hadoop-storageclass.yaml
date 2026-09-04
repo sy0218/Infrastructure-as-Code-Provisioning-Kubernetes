@@ -1,0 +1,28 @@
+# ===============================================
+# [Hadoop StorageClass → 정적 Local PV]
+#
+# 동적 PV 생성 없이 hadoop-persistentvolumes.yaml 에서 미리 만든 Local PV 를 쓴다.
+#
+# - no-provisioner → PV 를 자동 생성하지 않음
+# - WaitForFirstConsumer → Pod 스케줄링 시점에 PV 바인딩
+# - Retain → PVC 삭제 후에도 PV 와 데이터 유지
+#
+# Local PV 는 nodeAffinity 로 특정 Node 에 고정되므로
+# 데몬이 데이터가 없는 다른 Node 로 이동하지 않는다.
+# ===============================================
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+
+metadata:
+  name: {{ .Values.hadoop.storageClass }}
+  labels:
+    app.kubernetes.io/part-of: data-layer
+
+# 동적 프로비저닝 없이 정적 PV 사용
+provisioner: kubernetes.io/no-provisioner
+
+# Pod 스케줄링과 PV 바인딩을 함께 결정
+volumeBindingMode: WaitForFirstConsumer
+
+# PVC 삭제 후에도 PV 와 실제 데이터 유지
+reclaimPolicy: Retain

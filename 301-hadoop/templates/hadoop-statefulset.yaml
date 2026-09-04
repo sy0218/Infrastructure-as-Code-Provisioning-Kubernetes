@@ -1,0 +1,722 @@
+# ===============================================
+# [HDFS HA → StatefulSet 4종 + ZKFC]
+#
+# Pod ↔ Node ↔ Local PV 고정 + hostNetwork 구성
+# ZooKeeper ×3    → ZKFC 쿼럼
+# JournalNode ×3  → NameNode EditLog 공유
+# NameNode ×2     → Active / Standby + ZKFC
+# DataNode ×3     → HDFS 블록 저장
+#
+# 공통
+# - hostNetwork → Pod IP = Node IP, Service 미사용
+# - ordinal + nodeNames → 지정 Node + PV 고정
+# - XML 설정은 Helm 기동 스크립트에서 생성
+# - OnDelete → 설정 변경 시 수동 재기동
+# - fsGroup 0 → root:root 디렉터리에 그룹 쓰기
+# ===============================================
+
+{{/* 노드 이름 → IP 조회 */}}
+{{- define "hadoop.nodeIp" -}}
+{{- $ip := "" -}}
+{{- range .root.Values.global.nodes -}}{{- if eq .name $.name -}}{{- $ip = .ip -}}{{- end -}}{{- end -}}
+{{- required (printf "global.nodes 에 노드 %q 가 없다" .name) $ip -}}
+{{- end -}}
+
+{{/* nodeNames → ip:port 목록 생성 */}}
+{{- define "hadoop.addrList" -}}
+{{- $l := list -}}
+{{- range (index .root.Values.global.hadoop .comp).nodeNames -}}
+{{- $l = append $l (printf "%s:%d" (include "hadoop.nodeIp" (dict "root" $.root "name" .)) (int $.port)) -}}
+{{- end -}}
+{{- join .sep $l -}}
+{{- end -}}
+
+{{/* core-site.xml 설정 생성 */}}
+{{- define "hadoop.coreSite" -}}
+fs.defaultFS=hdfs://{{ .Values.global.hadoop.nameservice }}
+ha.zookeeper.quorum={{ include "hadoop.addrList" (dict "root" . "comp" "zookeeper" "port" .Values.global.hadoop.ports.zookeeperClient "sep" ",") }}
+hadoop.prometheus.endpoint.enabled=true
+{{- end -}}
+
+{{/* hdfs-site.xml 설정 생성 */}}
+{{- define "hadoop.hdfsSite" -}}
+{{- $ns := .Values.global.hadoop.nameservice -}}
+{{- $p := .Values.global.hadoop.ports -}}
+{{- $ids := list -}}
+{{- range $i, $n := .Values.global.hadoop.namenode.nodeNames }}{{ $ids = append $ids (printf "nn%d" $i) }}{{ end -}}
+dfs.nameservices={{ $ns }}
+dfs.ha.namenodes.{{ $ns }}={{ join "," $ids }}
+{{- range $i, $n := .Values.global.hadoop.namenode.nodeNames }}
+{{- $ip := include "hadoop.nodeIp" (dict "root" $ "name" $n) }}
+dfs.namenode.rpc-address.{{ $ns }}.nn{{ $i }}={{ $ip }}:{{ int $p.namenodeRpc }}
+dfs.namenode.http-address.{{ $ns }}.nn{{ $i }}={{ $ip }}:{{ int $p.namenodeHttp }}
+{{- end }}
+dfs.namenode.name.dir={{ .Values.hadoop.namenode.path }}
+dfs.namenode.shared.edits.dir=qjournal://{{ include "hadoop.addrList" (dict "root" . "comp" "journalnode" "port" $p.journalnodeRpc "sep" ";") }}/{{ $ns }}
+dfs.journalnode.edits.dir={{ .Values.hadoop.journalnode.path }}
+dfs.journalnode.rpc-address=0.0.0.0:{{ int $p.journalnodeRpc }}
+dfs.journalnode.http-address=0.0.0.0:{{ int $p.journalnodeHttp }}
+dfs.client.failover.proxy.provider.{{ $ns }}=org.apache.hadoop.hdfs.server.namenode.ha.ConfiguredFailoverProxyProvider
+dfs.ha.automatic-failover.enabled=true
+dfs.ha.zkfc.port={{ int $p.zkfc }}
+dfs.ha.fencing.methods=shell(/bin/true)
+dfs.ha.tail-edits.in-progress=true
+dfs.datanode.data.dir={{ .Values.hadoop.datanode.path }}
+dfs.datanode.data.dir.perm=770
+dfs.datanode.address=0.0.0.0:{{ int $p.datanodeData }}
+dfs.datanode.ipc.address=0.0.0.0:{{ int $p.datanodeIpc }}
+dfs.datanode.http.address=0.0.0.0:{{ int $p.datanodeHttp }}
+dfs.replication={{ int .Values.hadoop.replication }}
+dfs.namenode.datanode.registration.ip-hostname-check=false
+{{- end -}}
+
+{{/*
+기동 스크립트 공통부 — key=value 설정을 Hadoop XML로 변환
+- fencing → QJM으로 단일 writer 보장
+- tail-edits.in-progress → Standby가 진행 중인 EditLog까지 추적
+- ip-hostname-check=false → DataNode가 Node IP로 등록
+- data.dir.perm=770 → 노드 디렉터리 권한과 일치
+*/}}
+{{- define "hadoop.writeConf" -}}
+write_site() {
+  {
+    echo '<?xml version="1.0" encoding="UTF-8"?>'
+    echo '<configuration>'
+    printf '%s\n' "$2" | sed 's/^[[:space:]]*//' | while IFS='=' read -r k v; do
+      [ -n "$k" ] || continue
+      printf '  <property><name>%s</name><value>%s</value></property>\n' "$k" "$v"
+    done
+    echo '</configuration>'
+  } > "${HADOOP_CONF_DIR}/$1"
+}
+write_site core-site.xml "
+{{ include "hadoop.coreSite" . }}
+"
+write_site hdfs-site.xml "
+{{ include "hadoop.hdfsSite" . }}
+${HDFS_SITE_EXTRA:-}
+"
+echo "== ${POD_NAME} extra=[${HDFS_SITE_EXTRA:-}] conf=${HADOOP_CONF_DIR} =="
+{{- end -}}
+
+{{- $name := .Values.global.hadoop.name }}
+{{- $ports := .Values.global.hadoop.ports }}
+{{- $image := printf "%s/data-layer/%s:%s" .Values.global.harborRegistry .Values.hadoop.imageName .Values.global.imageTag }}
+
+# ===============================================
+# [ZooKeeper → StatefulSet]
+#
+# - StatefulSet → myid / 디스크 신원 유지
+# - 재기동 후 같은 멤버로 쿼럼 복귀
+# ===============================================
+---
+apiVersion: apps/v1
+kind: StatefulSet
+
+metadata:
+  name: {{ $name }}-zookeeper
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: {{ $name }}-zookeeper
+    app.kubernetes.io/name: hadoop
+    app.kubernetes.io/component: zookeeper
+    app.kubernetes.io/part-of: data-layer
+
+spec:
+  # Service 미사용 → 모든 주소가 Node IP
+  replicas: {{ len .Values.global.hadoop.zookeeper.nodeNames }}
+
+  # 쿼럼 구성 → 동시 기동
+  podManagementPolicy: Parallel
+
+  updateStrategy:
+    type: OnDelete
+
+  selector:
+    matchLabels:
+      app: {{ $name }}-zookeeper
+
+  template:
+    metadata:
+      labels:
+        app: {{ $name }}-zookeeper
+        app.kubernetes.io/name: hadoop
+        app.kubernetes.io/component: zookeeper
+        app.kubernetes.io/part-of: data-layer
+
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 30
+
+      securityContext:
+        fsGroup: 0
+        fsGroupChangePolicy: OnRootMismatch
+
+      # Node당 ZooKeeper 1개 배치
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app: {{ $name }}-zookeeper
+              topologyKey: kubernetes.io/hostname
+
+      containers:
+        - name: zookeeper
+          image: {{ $image }}
+          imagePullPolicy: IfNotPresent
+
+          command:
+            - /bin/bash
+            - -ec
+            - |
+              ORD="${POD_NAME##*-}"
+
+              # myid = ordinal + 1 → zoo.cfg의 server.N과 일치
+              echo "$((ORD + 1))" > {{ .Values.hadoop.zookeeper.path }}/myid
+
+              cat > "${ZOOCFGDIR}/zoo.cfg" <<'ZOOCFG'
+              tickTime=2000
+              initLimit=10
+              syncLimit=5
+              dataDir={{ .Values.hadoop.zookeeper.path }}
+              clientPort={{ int $ports.zookeeperClient }}
+              autopurge.snapRetainCount=3
+              autopurge.purgeInterval=24
+              4lw.commands.whitelist=ruok,srvr
+              admin.enableServer=false
+              metricsProvider.className=org.apache.zookeeper.metrics.prometheus.PrometheusMetricsProvider
+              metricsProvider.httpPort={{ int $ports.zookeeperMetrics }}
+              {{- range $i, $n := .Values.global.hadoop.zookeeper.nodeNames }}
+              server.{{ add1 $i }}={{ include "hadoop.nodeIp" (dict "root" $ "name" $n) }}:{{ int $ports.zookeeperPeer }}:{{ int $ports.zookeeperElection }}
+              {{- end }}
+              ZOOCFG
+
+              echo "== ${POD_NAME} myid=$((ORD + 1)) =="
+              export SERVER_JVMFLAGS="-Xms{{ .Values.hadoop.zookeeper.heap }} -Xmx{{ .Values.hadoop.zookeeper.heap }}"
+              exec zkServer.sh start-foreground
+
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+
+          ports:
+            - name: client
+              containerPort: {{ int $ports.zookeeperClient }}
+            - name: peer
+              containerPort: {{ int $ports.zookeeperPeer }}
+            - name: election
+              containerPort: {{ int $ports.zookeeperElection }}
+            - name: metrics
+              containerPort: {{ int $ports.zookeeperMetrics }}
+
+          volumeMounts:
+            - name: data
+              mountPath: {{ .Values.hadoop.zookeeper.path }}
+
+          resources:
+            {{- toYaml .Values.hadoop.zookeeper.resources | nindent 12 }}
+
+          # 쿼럼에 합류해야 Ready
+          readinessProbe:
+            exec:
+              command:
+                - /bin/bash
+                - -c
+                - 'exec 3<>/dev/tcp/127.0.0.1/{{ int $ports.zookeeperClient }}; echo srvr >&3; grep -qE "^Mode: (leader|follower)" <&3'
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 6
+
+          livenessProbe:
+            exec:
+              command:
+                - /bin/bash
+                - -c
+                - 'exec 3<>/dev/tcp/127.0.0.1/{{ int $ports.zookeeperClient }}; echo ruok >&3; grep -q imok <&3'
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 5
+
+  # ordinal별 PV가 지정 Node에 고정
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          app.kubernetes.io/part-of: data-layer
+          app.kubernetes.io/name: hadoop  # kafka PVC 와 구분해 선택 삭제할 수 있게 (part-of 만으로는 둘 다 잡힌다)
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: {{ .Values.hadoop.storageClass }}
+        resources:
+          requests:
+            storage: {{ .Values.hadoop.zookeeper.size }}
+
+
+# ===============================================
+# [JournalNode → StatefulSet]
+#
+# - StatefulSet → EditLog 디스크 유지
+# - 재기동 후 같은 디스크로 쿼럼 복구
+# ===============================================
+---
+apiVersion: apps/v1
+kind: StatefulSet
+
+metadata:
+  name: {{ $name }}-journalnode
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: {{ $name }}-journalnode
+    app.kubernetes.io/name: hadoop
+    app.kubernetes.io/component: journalnode
+    app.kubernetes.io/part-of: data-layer
+
+spec:
+  replicas: {{ len .Values.global.hadoop.journalnode.nodeNames }}
+
+  # JournalNode 쿼럼 구성 → 동시 기동
+  podManagementPolicy: Parallel
+
+  updateStrategy:
+    type: OnDelete
+
+  selector:
+    matchLabels:
+      app: {{ $name }}-journalnode
+
+  template:
+    metadata:
+      labels:
+        app: {{ $name }}-journalnode
+        app.kubernetes.io/name: hadoop
+        app.kubernetes.io/component: journalnode
+        app.kubernetes.io/part-of: data-layer
+
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: {{ .Values.hadoop.terminationGracePeriodSeconds }}
+
+      securityContext:
+        fsGroup: 0
+        fsGroupChangePolicy: OnRootMismatch
+
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app: {{ $name }}-journalnode
+              topologyKey: kubernetes.io/hostname
+
+      containers:
+        - name: journalnode
+          image: {{ $image }}
+          imagePullPolicy: IfNotPresent
+
+          command:
+            - /bin/bash
+            - -ec
+            - |
+              ORD="${POD_NAME##*-}"
+              {{- include "hadoop.writeConf" $ | nindent 14 }}
+
+              export HDFS_JOURNALNODE_OPTS="-Xms{{ .Values.hadoop.journalnode.heap }} -Xmx{{ .Values.hadoop.journalnode.heap }}"
+              exec hdfs journalnode
+
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+
+          ports:
+            - name: rpc
+              containerPort: {{ int $ports.journalnodeRpc }}
+            - name: http
+              containerPort: {{ int $ports.journalnodeHttp }}
+
+          volumeMounts:
+            - name: data
+              mountPath: {{ .Values.hadoop.journalnode.path }}
+
+          resources:
+            {{- toYaml .Values.hadoop.journalnode.resources | nindent 12 }}
+
+          readinessProbe:
+            tcpSocket:
+              port: rpc
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 6
+
+          livenessProbe:
+            tcpSocket:
+              port: rpc
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            failureThreshold: 5
+
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          app.kubernetes.io/part-of: data-layer
+          app.kubernetes.io/name: hadoop  # kafka PVC 와 구분해 선택 삭제할 수 있게 (part-of 만으로는 둘 다 잡힌다)
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: {{ .Values.hadoop.storageClass }}
+        resources:
+          requests:
+            storage: {{ .Values.hadoop.journalnode.size }}
+
+
+# ===============================================
+# [NameNode + ZKFC → StatefulSet]
+#
+# - StatefulSet → nn0 / nn1 + fsimage 디스크 유지
+# - ZKFC → ZooKeeper 기반 Active / Standby 전환
+#
+# ZKFC는 같은 Pod의 NameNode 상태를 감시
+# → Active 잠금 획득 시 해당 NameNode를 Active로 전환
+#
+# 최초 기동
+# - nn0 → bootstrapStandby 실패 시 JournalNode 확인 후 format
+# - nn1 → nn0 기동 후 bootstrapStandby 재시도
+# - -force 없이 format → 기존 EditLog 보호
+# ===============================================
+---
+apiVersion: apps/v1
+kind: StatefulSet
+
+metadata:
+  name: {{ $name }}-namenode
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: {{ $name }}-namenode
+    app.kubernetes.io/name: hadoop
+    app.kubernetes.io/component: namenode
+    app.kubernetes.io/part-of: data-layer
+
+spec:
+  replicas: {{ len .Values.global.hadoop.namenode.nodeNames }}
+
+  # nn1은 스크립트에서 nn0을 대기 → 순서 강제 불필요
+  podManagementPolicy: Parallel
+
+  updateStrategy:
+    type: OnDelete
+
+  selector:
+    matchLabels:
+      app: {{ $name }}-namenode
+
+  template:
+    metadata:
+      labels:
+        app: {{ $name }}-namenode
+        app.kubernetes.io/name: hadoop
+        app.kubernetes.io/component: namenode
+        app.kubernetes.io/part-of: data-layer
+
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: {{ .Values.hadoop.terminationGracePeriodSeconds }}
+
+      securityContext:
+        fsGroup: 0
+        fsGroupChangePolicy: OnRootMismatch
+
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app: {{ $name }}-namenode
+              topologyKey: kubernetes.io/hostname
+
+      containers:
+        - name: namenode
+          image: {{ $image }}
+          imagePullPolicy: IfNotPresent
+
+          command:
+            - /bin/bash
+            - -ec
+            - |
+              ORD="${POD_NAME##*-}"
+              HDFS_SITE_EXTRA="dfs.ha.namenode.id=nn${ORD}"
+              {{- include "hadoop.writeConf" $ | nindent 14 }}
+
+              export HDFS_NAMENODE_OPTS="-Xms{{ .Values.hadoop.namenode.heap }} -Xmx{{ .Values.hadoop.namenode.heap }}"
+              NAME_DIR={{ .Values.hadoop.namenode.path }}
+
+              # 상대 NameNode의 fsimage 복사
+              bootstrap() {
+                hdfs namenode -bootstrapStandby -nonInteractive && return 0
+                rm -rf "${NAME_DIR}/current" "${NAME_DIR}/in_use.lock"; return 1
+              }
+
+              # fsimage가 없으면 중단된 bootstrap 잔재 정리
+              if ! ls "${NAME_DIR}"/current/fsimage_* >/dev/null 2>&1; then
+                rm -rf "${NAME_DIR}/current" "${NAME_DIR}/in_use.lock"
+                if [ "${ORD}" -eq 0 ]; then
+                  # nn0: bootstrap 실패 시 JournalNode 확인 후 최초 format
+                  if ! bootstrap; then
+                    for a in {{ include "hadoop.addrList" (dict "root" $ "comp" "journalnode" "port" $ports.journalnodeRpc "sep" " ") }}; do
+                      until timeout 3 bash -c "exec 3<>/dev/tcp/${a%:*}/${a##*:}" 2>/dev/null; do
+                        echo "== nn0: waiting JournalNode ${a} before format =="; sleep 5
+                      done
+                    done
+                    # -force 없이 format → 기존 EditLog 보호
+                    hdfs namenode -format -nonInteractive -clusterid {{ .Values.hadoop.clusterId | quote }}
+                  fi
+                else
+                  until bootstrap; do
+                    echo "== nn${ORD}: nn0 not ready, retrying bootstrapStandby =="; sleep 15
+                  done
+                fi
+              fi
+
+              exec hdfs namenode
+
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+
+          ports:
+            - name: rpc
+              containerPort: {{ int $ports.namenodeRpc }}
+            - name: http
+              containerPort: {{ int $ports.namenodeHttp }}
+
+          volumeMounts:
+            - name: data
+              mountPath: {{ .Values.hadoop.namenode.path }}
+
+          resources:
+            {{- toYaml .Values.hadoop.namenode.resources | nindent 12 }}
+
+          # RPC 포트가 열릴 때까지 최대 10분 대기
+          startupProbe:
+            tcpSocket:
+              port: rpc
+            periodSeconds: 10
+            failureThreshold: 60
+
+          readinessProbe:
+            tcpSocket:
+              port: rpc
+            periodSeconds: 10
+            failureThreshold: 3
+
+          livenessProbe:
+            tcpSocket:
+              port: rpc
+            periodSeconds: 30
+            failureThreshold: 5
+
+        # ZKFC → NameNode 상태 감시 + Active 잠금 관리
+        - name: zkfc
+          image: {{ $image }}
+          imagePullPolicy: IfNotPresent
+
+          command:
+            - /bin/bash
+            - -ec
+            - |
+              ORD="${POD_NAME##*-}"
+              HDFS_SITE_EXTRA="dfs.ha.namenode.id=nn${ORD}"
+              {{- include "hadoop.writeConf" $ | nindent 14 }}
+
+              export HDFS_ZKFC_OPTS="-Xms{{ .Values.hadoop.zkfc.heap }} -Xmx{{ .Values.hadoop.zkfc.heap }}"
+
+              # ZooKeeper HA znode 생성 → 이미 있으면 정상
+              until hdfs zkfc -formatZK -nonInteractive; do
+                rc=$?
+                [ "${rc}" -eq 2 ] && break
+                echo "== zkfc nn${ORD}: ZooKeeper not ready (rc=${rc}), retrying =="; sleep 5
+              done
+
+              exec hdfs zkfc
+
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+
+          ports:
+            - name: zkfc
+              containerPort: {{ int $ports.zkfc }}
+
+          resources:
+            {{- toYaml .Values.hadoop.zkfc.resources | nindent 12 }}
+
+          readinessProbe:
+            tcpSocket:
+              port: zkfc
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 6
+
+          livenessProbe:
+            tcpSocket:
+              port: zkfc
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            failureThreshold: 5
+
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          app.kubernetes.io/part-of: data-layer
+          app.kubernetes.io/name: hadoop  # kafka PVC 와 구분해 선택 삭제할 수 있게 (part-of 만으로는 둘 다 잡힌다)
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: {{ .Values.hadoop.storageClass }}
+        resources:
+          requests:
+            storage: {{ .Values.hadoop.namenode.size }}
+
+
+# ===============================================
+# [DataNode → StatefulSet]
+#
+# - StatefulSet → 블록 디스크 / storageID 유지
+# - 다른 Node로 이동하지 않도록 디스크 고정
+# - hdfs-site의 nn0 / nn1 주소로 Active 전환 대응
+# ===============================================
+---
+apiVersion: apps/v1
+kind: StatefulSet
+
+metadata:
+  name: {{ $name }}-datanode
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: {{ $name }}-datanode
+    app.kubernetes.io/name: hadoop
+    app.kubernetes.io/component: datanode
+    app.kubernetes.io/part-of: data-layer
+
+spec:
+  replicas: {{ len .Values.global.hadoop.datanode.nodeNames }}
+
+  # DataNode는 독립 구성 → 동시 기동
+  podManagementPolicy: Parallel
+
+  updateStrategy:
+    type: OnDelete
+
+  selector:
+    matchLabels:
+      app: {{ $name }}-datanode
+
+  template:
+    metadata:
+      labels:
+        app: {{ $name }}-datanode
+        app.kubernetes.io/name: hadoop
+        app.kubernetes.io/component: datanode
+        app.kubernetes.io/part-of: data-layer
+
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: {{ .Values.hadoop.terminationGracePeriodSeconds }}
+
+      securityContext:
+        fsGroup: 0
+        fsGroupChangePolicy: OnRootMismatch
+
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app: {{ $name }}-datanode
+              topologyKey: kubernetes.io/hostname
+
+      containers:
+        - name: datanode
+          image: {{ $image }}
+          imagePullPolicy: IfNotPresent
+
+          command:
+            - /bin/bash
+            - -ec
+            - |
+              ORD="${POD_NAME##*-}"
+
+              # hostNetwork → Node IP로 등록
+              HDFS_SITE_EXTRA="dfs.datanode.hostname=${HOST_IP}"
+              {{- include "hadoop.writeConf" $ | nindent 14 }}
+
+              export HDFS_DATANODE_OPTS="-Xms{{ .Values.hadoop.datanode.heap }} -Xmx{{ .Values.hadoop.datanode.heap }}"
+              exec hdfs datanode
+
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+
+            - name: HOST_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+
+          ports:
+            - name: data
+              containerPort: {{ int $ports.datanodeData }}
+            - name: ipc
+              containerPort: {{ int $ports.datanodeIpc }}
+            - name: http
+              containerPort: {{ int $ports.datanodeHttp }}
+
+          volumeMounts:
+            - name: data
+              mountPath: {{ .Values.hadoop.datanode.path }}
+
+          resources:
+            {{- toYaml .Values.hadoop.datanode.resources | nindent 12 }}
+
+          readinessProbe:
+            tcpSocket:
+              port: ipc
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 6
+
+          livenessProbe:
+            tcpSocket:
+              port: ipc
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            failureThreshold: 5
+
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          app.kubernetes.io/part-of: data-layer
+          app.kubernetes.io/name: hadoop  # kafka PVC 와 구분해 선택 삭제할 수 있게 (part-of 만으로는 둘 다 잡힌다)
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: {{ .Values.hadoop.storageClass }}
+        resources:
+          requests:
+            storage: {{ .Values.hadoop.datanode.size }}

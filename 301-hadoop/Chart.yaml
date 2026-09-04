@@ -1,0 +1,25 @@
+# ===================================================
+# [301-hadoop]
+#
+# HDFS HA 클러스터 배포
+# - ZooKeeper ×3 / JournalNode ×3
+# - NameNode ×2 + ZKFC / DataNode ×3
+#
+# 설계
+# - hostNetwork + Local PV 사용
+# - Pod ↔ Node ↔ 디스크 고정
+# - HDFS 자체 HA로 장애 대응
+#   → ZKFC 자동 전환 / QJM 쿼럼 / 블록 복제
+#
+# 의존성
+# - 300-data-layer-base 선행 배포
+# - 각 Node에 /data/hadoop-* 디렉터리 사전 생성
+# - Harbor에 data-layer/hadoop 이미지 필요
+# ===================================================
+apiVersion: v2
+name: hadoop
+description: "HDFS HA 클러스터 → ZooKeeper, JournalNode, NameNode(+ZKFC), DataNode"
+type: application
+
+# Chart 버전 (업그레이드 시 명시적으로 변경)
+version: 0.1.0
