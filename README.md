@@ -1,4 +1,4 @@
-# ☸️ Terraform + Helm(ArgoCD) 기반 Kubernetes 배포 자동화 (IaC)
+# ☸️ Terraform + Helm 기반 Kubernetes 배포 자동화 (IaC)
 
 **Kubernetes 리소스를 코드로 선언하고,
 `Data Pipeline Stack` 을 자동으로 배포/관리하기 위한 `IaC` 프로젝트 입니다.**
@@ -75,9 +75,11 @@ Infrastructure-as-Code-Terraform.kubernetes/
 │
 │ # ── 애플리케이션 플랫폼 (Helm + ArgoCD 예정) ─────────────────
 ├── 300-data-layer-base/    # 데이터 레이어 공통 리소스 (Namespace, ConfigMap, Secret, RBAC)
-├── 301-kafka-tools/        # Kafka 및 운영 도구 (Kafka, Schema Registry, UI, Exporter)
+├── 301-hadoop/             # HDFS HA (ZooKeeper, JournalNode, NameNode+ZKFC, DataNode) — Airflow 태스크 로그 저장소
+├── 301-kafka/              # Kafka(KRaft) 클러스터 및 운영 도구 (Schema Registry, UI, Exporter)
+├── 301-minio/              # 내부 전용 S3 (MinIO 단일 인스턴스 + Longhorn PVC)
 ├── 302-monitoring/         # 모니터링 스택 (Alloy, Prometheus, Grafana)
-├── 303-postgres/           # PostgreSQL 클러스터 구성 (CNPG, 3인스턴스)
+├── 303-postgres/           # PostgreSQL 클러스터 구성 (CNPG, 2인스턴스)
 ├── 304-airflow/            # 워크플로우 오케스트레이션 (Airflow)
 ├── 305-api/                # 데이터 레이어 API 및 관리 서비스 (FastAPI)
 ├── 306-cdc/                # CDC 파이프라인 (Kafka Connect, Debezium)
@@ -128,11 +130,12 @@ Infrastructure-as-Code-Terraform.kubernetes/
 # ⚙️ 0단계 → 이미지 빌드/푸시 (Terraform/Helm 밖 수동 단계)
 > **`200-harbor` apply 직후, 워크로드 스택(`301~307`, `400`) 배포 전에 한 번 실행합니다.**
 ```bash
-docker login data-layer-harbor              # 사전: /etc/docker/daemon.json 의 insecure-registries
-/my_project/data_pipeline/scripts/build_and_push.sh v0.1.0
+docker login data-layer-harbor:80           # 사전: /etc/docker/daemon.json 의 insecure-registries ["data-layer-harbor:80"] (docker 경로 — buildctl 경로는 Ansible buildkitd 롤이 인증 파일을 만든다)
+/project/data_pipeline/scripts/build_and_push.sh v0.1.0
 ```
-- 모든 워크로드는 `data-layer-harbor/data-layer/<name>:<tag>` 를 pull 한다 (예외 없음)
-- 여기서 쓴 태그를 각 스택 `terraform.tfvars` 의 `image_tag` 에 **그대로** 넣는다
+- 모든 워크로드는 `data-layer-harbor:80/data-layer/<name>:<tag>` 를 pull 한다 (예외 없음 — `:80` 은 생략 불가, 포트 없는 단일 라벨은 docker.io 네임스페이스로 정규화된다)
+- 여기서 쓴 태그를 `values.common.yaml` 의 `global.imageTag` 에 **그대로** 넣는다
+  (예외: `303-postgres/values.yaml` 의 `imageTag` 는 `16.15-<tag>` 형식 — CNPG 가 태그에서 PG 버전을 읽는다. `build_and_push.sh 16.15-<tag> postgres` 로 따로 push)
 - `[주의]` `imagePullPolicy: IfNotPresent` 라서 **태그 재사용 금지**
 
 ---
@@ -330,32 +333,1086 @@ cd /project/Infrastructure-as-Code-Terraform.kubernetes
 ---
 
 ### 🔹1. 300-data-layer-base
-- **data-layer 워크로드 공용 오브젝트 프로비저닝(`Namespace`, `ConfigMap`, `Secret`, `ClusterRoleBinding`)**
+- **data-layer 워크로드 공용 오브젝트 프로비저닝**
+  (`Namespace` 1 / `ConfigMap` 3 / `Secret` 2 / `ClusterRoleBinding` 1)
 
 ```bash
-1. 300-data-layer-base 실행
-helm lint 300-data-layer-base                         → 문법 + values.schema.json 검증
-helm template data-layer-base 300-data-layer-base     → 렌더 결과 미리 확인 (클러스터 접근 없음)
-helm install data-layer-base ./300-data-layer-base -n default   → 공용 오브젝트 4종 생성
+# 1. 300-data-layer-base 실행
+#    global.* 은 차트에 없다 → values.common.yaml 을 반드시 같이 먹인다 (없으면 스키마가 렌더 전에 막음)
+helm lint 300-data-layer-base -f values.common.yaml                          # 문법 + values.schema.json 검증
+helm template data-layer-base 300-data-layer-base -f values.common.yaml      # 렌더 결과 미리 확인 (클러스터 접근 없음)
+
+#    release 기록은 default 에 둔다 → data-layer 는 이 차트가 만들 대상이라 설치 시점엔 없다.
+#    --create-namespace 는 금지 (차트의 Namespace 오브젝트와 "already exists" 충돌)
+helm install data-layer-base ./300-data-layer-base -f values.common.yaml -n default
 
 
 [검증]
-1. 릴리스 상태 확인
+# 1. 릴리스 상태
 helm -n default ls                        → STATUS = deployed
 helm -n default status data-layer-base    → STATUS = deployed
 
-2. 네임스페이스 생성 확인
-kubectl get ns data-layer → STATUS = Active
+# 2. 네임스페이스 (차트가 소유)
+kubectl get ns data-layer                 → STATUS = Active
 
-3. 공용 ConfigMap / Secret 확인
-kubectl -n data-layer get cm/data-layer-env secret/data-layer-secrets → DATA = 70 / 12
+# 3. 공용 ConfigMap / Secret
+kubectl -n data-layer get cm/data-layer-env secret/data-layer-secrets        → DATA = 70 / 12
+kubectl -n data-layer get cm,secret                                          → cm 3종 + secret 2종
+                                                                             # (+ kube-root-ca.crt 는 K8s 가 자동 생성)
 
-4. 클러스터 밖 접속값이 실제 노드 주소와 맞는지
-kubectl -n data-layer get cm data-layer-env -o jsonpath='{.data.KAFKA_BOOTSTRAP}' → 192.168.0.38:9092,192.168.0.39:9092,192.168.0.40:9092
+# 4. 설정 ConfigMap 2종 (301-kafka 가 볼륨 마운트로 소비)
+kubectl -n data-layer get cm kafka-config kafka-jmx-exporter
+#    alloy-config / prometheus-config 는 302-monitoring 소유다 (같은 릴리스여야 checksum 자동 롤아웃이 된다)
 
-5. 권한 바인딩 확인
-kubectl get clusterrolebinding data-layer-default-admin → default SA 에 cluster-admin
+# 5. 파생 접속값이 실제 노드/서비스 주소와 맞는지 (values 가 아니라 _helpers.tpl 이 조립)
+kubectl -n data-layer get cm data-layer-env -o jsonpath='{.data.KAFKA_BOOTSTRAP}'
+  → 192.168.56.38:9092,192.168.56.39:9092,192.168.56.40:9092     # 노드 IP 직결 (hostNetwork)
+kubectl -n data-layer get cm data-layer-env -o jsonpath='{.data.COLLECTOR_DB_HOST}'
+  → data-layer-postgres-rw.data-layer.svc.cluster.local          # 303 CNPG rw Service
+
+# 6. CNPG 전용 Secret (basic-auth → 303 이 role 생성에 사용)
+kubectl -n data-layer get secret data-layer-postgres-app-user    → TYPE = kubernetes.io/basic-auth
+
+# 7. 권한 바인딩
+kubectl get clusterrolebinding data-layer-default-admin          → data-layer:default SA → cluster-admin
 ```
+
+---
+
+### 🔹2. 301-kafka
+- **Kafka(KRaft) 3-Broker + 운영 도구 3종**
+
+```bash
+# =====================================================
+# 0. 배포 전제
+# =====================================================
+
+# 1. 브로커 노드 디스크 사전 생성
+     - Ansible kafka_prereq 실행 → 각 노드에 디렉토리 생성
+     - /data/kafka-broker
+     - /data/kafka-controller
+     - 권한: root:root 2770
+
+# 2. hostNetwork 포트 확인
+     - 9092 / 9093 / 9094 / 9404 는 노드에서 사용 중이면 안 됨
+
+# 3. Harbor 이미지 준비
+     - kafka / schema-registry / kafka-ui / kafka-exporter
+
+# 4. 300-data-layer-base 선행 배포
+     - kafka-config / kafka-jmx-exporter ConfigMap 필요
+
+
+# =====================================================
+# 1. Helm 배포
+# =====================================================
+
+# values.common.yaml → global.* 공통값 주입
+helm lint 301-kafka -f values.common.yaml
+
+# 렌더링 결과 확인
+helm template kafka 301-kafka -f values.common.yaml
+
+# Kafka 배포
+helm install kafka ./301-kafka -f values.common.yaml -n data-layer
+
+
+# =====================================================
+# 2. 배포 상태 (검증)
+# =====================================================
+
+helm -n data-layer ls
+helm -n data-layer status kafka
+
+→ STATUS = deployed
+
+
+# =====================================================
+# 3. Kafka Broker 확인 (검증)
+# =====================================================
+
+# StatefulSet + hostNetwork 확인
+# → Broker 1개씩 지정 노드에 배치
+# → Pod IP = Node IP
+kubectl -n data-layer get pod -l app=kafka -o wide
+
+# 예:
+# kafka-0 → ap
+# kafka-1 → s1
+# kafka-2 → s2
+
+
+# =====================================================
+# 4. Local PV / PVC 확인 (검증)
+# =====================================================
+
+# Broker당 data / metadata PVC 2개
+kubectl -n data-layer get pvc | grep kafka
+→ Bound × 6
+
+# 실제 Local PV 확인
+kubectl get pv -l app.kubernetes.io/name=kafka
+
+# StorageClass 확인
+kubectl get sc kafka-local
+
+→ no-provisioner / Retain
+
+
+# =====================================================
+# 5. KRaft Quorum 확인 (검증)
+# =====================================================
+
+kubectl -n data-layer exec kafka-0 -- \
+  /opt/kafka/bin/kafka-metadata-quorum.sh \
+  --bootstrap-server localhost:9092 describe --status
+
+→ CurrentVoters = 3
+→ LeaderId 정상
+
+
+# =====================================================
+# 6. Topic / Replication 확인 (검증)
+# =====================================================
+
+# Topic 목록
+kubectl -n data-layer exec kafka-0 -- \
+  /opt/kafka/bin/kafka-topics.sh \
+  --bootstrap-server localhost:9092 --list
+
+# 계약 Topic + Kafka 내부 Topic 확인
+
+# Under-Replicated Partition 확인
+kubectl -n data-layer exec kafka-0 -- \
+  /opt/kafka/bin/kafka-topics.sh \
+  --bootstrap-server localhost:9092 \
+  --describe --under-replicated-partitions
+
+→ 빈 출력 = URP 0 = 복제 정상
+
+
+# =====================================================
+# 7. 운영 도구 확인 (검증)
+# =====================================================
+
+kubectl -n data-layer rollout status \
+  deploy/schema-registry \
+  deploy/kafka-ui \
+  deploy/kafka-exporter
+
+→ 3개 모두 successfully rolled out
+
+kubectl -n data-layer get svc \
+  schema-registry kafka-ui kafka-exporter
+
+# 브로커에는 Service 가 없다 (hostNetwork → 노드 IP:9092 직결 — 301-kafka README '브로커에는 Service 가 없다')
+→ Schema Registry 9096
+→ Kafka UI 9095
+→ Kafka Exporter 9097
+
+
+# =====================================================
+# 8. Kafka UI 외부 접속 (검증)
+# =====================================================
+
+# Host 기반 Ingress 확인
+kubectl -n data-layer get ingress kafka-ui
+
+# HTTP 응답 확인
+curl -s -o /dev/null -w '%{http_code}\n' \
+  -H 'Host: data-layer-kafka-ui' \
+  http://192.168.56.240/
+
+→ 200
+
+
+# =====================================================
+# 9. Node / JMX Exporter 확인 (검증)
+# =====================================================
+
+# hostNetwork 포트 확인
+ss -lnt | grep -E ':(909[2-4]|9404)$'
+
+→ 9092 / 9093 / 9094 / 9404 LISTEN
+
+# Broker JVM Metrics 확인
+curl -s http://192.168.56.38:9404/metrics | head -3
+
+→ JMX Exporter 메트릭 출력
+```
+
+---
+
+### 🔹3. 301-minio (s3)
+- **MinIO 단일 인스턴스**
+
+```bash
+# =====================================================
+# 0. 배포 전제
+# =====================================================
+
+# Longhorn StorageClass 준비
+# Node 장애 시 Pod 자동 재기동 정책 적용
+     - longhorn StorageClass 존재
+     - nodeDownPodDeletionPolicy 적용
+
+# Harbor에 MinIO 이미지 사전 등록
+     - minio (quay.io/minio/minio 재호스팅, mc 동봉)
+
+# data-layer 기본 리소스 선행 배포
+# MinIO 인증정보는 data-layer-secrets 사용
+     - 300-data-layer-base 선행 배포
+     - data-layer-secrets 의 MINIO_ROOT_USER / MINIO_ROOT_PASSWORD 사용
+
+
+# =====================================================
+# 1. Helm 배포
+# =====================================================
+
+# 공통 values 적용 및 Chart 검증
+helm lint 301-minio -f values.common.yaml
+
+# 렌더링 결과 확인
+helm template minio 301-minio -f values.common.yaml
+
+# MinIO 배포
+helm install minio ./301-minio -f values.common.yaml -n data-layer
+
+
+# =====================================================
+# 2. 배포 상태 (검증)
+# =====================================================
+
+helm -n data-layer ls
+helm -n data-layer status minio
+
+→ STATUS = deployed
+
+
+# =====================================================
+# 3. Pod / PVC / Service 확인 (검증)
+# =====================================================
+
+kubectl -n data-layer get pod,pvc,svc -l app=minio -o wide
+
+→ Pod Running
+→ PVC Bound (Longhorn / 20Gi)
+→ Service ClusterIP :9000
+→ Console 비활성화
+
+# Service 엔드포인트 확인
+kubectl -n data-layer get endpoints minio
+
+→ <Pod IP>:9000
+
+
+# =====================================================
+# 4. Longhorn 볼륨 확인 (검증)
+# =====================================================
+
+# PVC에 연결된 볼륨 상태 확인
+kubectl -n longhorn-system get volumes.longhorn.io \
+  $(kubectl -n data-layer get pvc minio-data -o jsonpath='{.spec.volumeName}')
+
+→ attached / healthy
+
+# Replica 분산 확인
+kubectl -n longhorn-system get replicas.longhorn.io -o wide | grep minio
+
+→ Replica 2개가 서로 다른 노드에 존재
+
+
+# =====================================================
+# 5. S3 API 확인 (검증)
+# =====================================================
+
+# MinIO API Ready 상태 확인
+kubectl -n data-layer exec deploy/minio -- \
+  curl -s -o /dev/null -w '%{http_code}\n' http://localhost:9000/minio/health/ready
+
+→ 200
+
+# S3 API 및 인증 확인
+kubectl -n data-layer exec deploy/minio -- sh -c \
+  'mc alias set local http://localhost:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" && mc ready local'
+
+→ The cluster is ready
+
+# 클러스터 내부 접속 주소
+→ http://minio.data-layer.svc.cluster.local:9000
+
+
+# =====================================================
+# 6. 노드 장애 페일오버 (검증)
+# =====================================================
+
+# Longhorn 장애 대응 정책 확인
+kubectl -n longhorn-system get setting node-down-pod-deletion-policy
+
+→ delete-both-statefulset-and-deployment-pod
+
+# MinIO 실행 노드 장애 시 페일오버 확인
+kubectl -n data-layer get pod -l app=minio -o wide -w
+
+→ Pod 삭제 → 다른 노드 재스케줄 → 볼륨 재연결 → 서비스 복구
+→ 데이터 유지
+```
+
+---
+
+### 🔹4. 301-hadoop
+- **HDFS HA (NameNode 2 + ZKFC, JournalNode 3, ZooKeeper 3, DataNode 3) → hostNetwork + 정적 Local PV**
+
+```bash
+# =====================================================
+# 0. 배포 전제
+# =====================================================
+
+# 노드 로컬 디렉터리 준비 (Local PV)
+# Ansible hadoop_prereq 롤로 사전 생성
+# 미생성 노드는 Local PV 마운트 실패로 Pod 기동 불가
+- bin/start_hadoop_prereq.sh <ansible_dir> all
+- 디렉터리: /data/hadoop-{zookeeper,journalnode,namenode,datanode}
+
+# hostNetwork 포트 사전 확인 (노드별 중복 불가)
+- NameNode: 8020/9870
+- JournalNode: 8485/8480
+- ZKFC: 8019
+- DataNode: 9866/9867/9864
+- ZooKeeper: 2181/2888/3888/7000
+ss -lnt | grep -E ':(8020|9870|8485|8480|8019|986[467]|2181|2888|3888|7000)$'   # 빈 출력
+
+# Hadoop 이미지 Harbor 사전 등록
+# Hadoop 3.4.3 + ZooKeeper 3.9.5 / UID 1000
+- ./scripts/build_and_push.sh v0.1.0 hadoop
+
+# data-layer 기본 리소스 선행 배포
+- 300-data-layer-base 선행 배포
+- 노드/포트/nameservice: values.common.yaml의 global 설정 사용
+- Service 없음 (hostNetwork → 노드 IP 직접 사용)
+
+
+# =====================================================
+# 1. Helm 배포
+# =====================================================
+
+helm lint 301-hadoop -f values.common.yaml
+helm template hadoop 301-hadoop -f values.common.yaml
+helm install hadoop ./301-hadoop -f values.common.yaml -n data-layer
+
+# 최초 기동 시 HA 초기화 자동 수행 (약 2~3분)
+# ZooKeeper → JournalNode → NameNode format/bootstrap → ZKFC → DataNode
+# nn1의 bootstrapStandby retry/error는 nn0 기동 대기 중 발생하는 정상 로그
+# 재기동 시 기존 fsimage가 있으면 format/bootstrap 생략
+
+
+# =====================================================
+# 2. 배포 상태 확인
+# =====================================================
+
+helm -n data-layer ls
+helm -n data-layer status hadoop
+
+# STATUS = deployed
+
+
+# =====================================================
+# 3. Pod / PVC / PV 확인
+# =====================================================
+
+kubectl -n data-layer get pod -l app.kubernetes.io/name=hadoop -o wide
+
+# 11개 Running / Restart 0
+# NameNode는 2/2 (NameNode + ZKFC)
+# Pod IP = 노드 IP (hostNetwork)
+# ordinal과 nodeNames 순서로 노드 고정
+
+kubectl -n data-layer get pvc -l app.kubernetes.io/name=hadoop
+kubectl get pv -l app.kubernetes.io/name=hadoop
+
+# PVC 11개 Bound
+# Local PV + claimRef로 Pod와 노드/디스크 고정
+
+
+# =====================================================
+# 4. HA 구성 확인
+# =====================================================
+
+# NameNode Active / Standby
+kubectl -n data-layer exec hadoop-namenode-0 -c namenode -- hdfs haadmin -getAllServiceState
+
+# Active 1대 / Standby 1대
+
+
+# ZooKeeper 쿼럼
+for i in 0 1 2; do kubectl -n data-layer exec hadoop-zookeeper-$i -- \
+  bash -c 'exec 3<>/dev/tcp/127.0.0.1/2181; echo srvr >&3; grep -E "Mode|Zxid" <&3'; done
+
+# Leader 1대 + Follower 2대
+# Zxid 동기화 확인
+
+
+# JournalNode EditLog 동기화
+for ip in 192.168.56.38 192.168.56.39 192.168.56.40; do
+  curl -s "http://$ip:8480/jmx?qry=Hadoop:service=JournalNode,name=Journal-datalayer" \
+    | grep -oE '"(LastWrittenTxId|CurrentLagTxns)" ?: ?[0-9]+'
+done
+
+# 3대 LastWrittenTxId 동일 / CurrentLagTxns = 0
+
+
+# DataNode / 블록 상태
+kubectl -n data-layer exec hadoop-namenode-0 -c namenode -- hdfs dfsadmin -report \
+  | grep -E 'Live datanodes|Dead datanodes|Under replicated|Missing blocks'
+
+# Live 3 / Dead 0 / Under replicated 0 / Missing 0
+
+
+# =====================================================
+# 5. HDFS 쓰기 / 읽기 검증
+# =====================================================
+
+kubectl -n data-layer exec hadoop-namenode-0 -c namenode -- bash -c \
+  'echo ok > /tmp/t && hdfs dfs -mkdir -p /smoke && hdfs dfs -put -f /tmp/t /smoke/t \
+   && hdfs dfs -cat /smoke/t && hdfs fsck /smoke/t | grep -E "Status|Average block replication"'
+
+# ok 출력
+# Status: HEALTHY
+# Average block replication: 3.0
+
+kubectl -n data-layer exec hadoop-namenode-0 -c namenode -- hdfs dfs -rm -r -skipTrash /smoke
+
+# 접속 정보
+# fs.defaultFS = hdfs://datalayer
+# 클라이언트는 nn0/nn1 주소가 포함된 hdfs-site.xml 필요
+# Web UI: http://192.168.56.38:9870 / http://192.168.56.39:9870
+# HDFS 슈퍼유저: hadoop
+# 사용자 디렉터리는 /user/<계정> 생성 후 chown 필요
+
+
+# =====================================================
+# 6. NameNode 자동 페일오버 검증
+# =====================================================
+
+# Active 삭제 → ZKFC가 Standby를 Active로 승격
+# 기존 Local PV를 사용하므로 데이터/포맷 상태 유지
+kubectl -n data-layer delete pod hadoop-namenode-0
+
+kubectl -n data-layer exec hadoop-namenode-1 -c namenode -- \
+  hdfs haadmin -getAllServiceState
+
+# s1:8020 active / ap:8020 standby
+
+
+# 노드 장애 시
+# Local PV 특성상 다른 노드로 Pod 이동하지 않음
+# NameNode 1대가 서비스 유지
+# DataNode는 replication=3으로 데이터 보호
+# 노드 복구 후 기존 디스크에서 Pod 재기동
+
+
+# =====================================================
+# 7. 운영
+# =====================================================
+
+# 설정 변경 시 OnDelete → helm upgrade만으로 Pod 재기동되지 않음
+# NameNode는 Standby → 확인 → Active 순으로 순차 재기동
+# JournalNode / ZooKeeper도 쿼럼 유지하며 한 대씩 재기동
+
+helm upgrade hadoop ./301-hadoop -f values.common.yaml -n data-layer
+kubectl -n data-layer delete pod hadoop-namenode-1
+
+# 메모리: 현재 requests 미설정(BestEffort)
+# 메모리 부족 시 values.yaml의 JVM heap부터 조정
+ssh root@ap free -m
+
+# 삭제 시 Local PV 데이터는 Retain으로 유지
+# 완전 초기화 시 모든 노드의 /data/hadoop-* 데이터 삭제
+helm uninstall hadoop -n data-layer
+kubectl -n data-layer delete pvc -l app.kubernetes.io/name=hadoop
+
+```
+
+---
+
+
+### 🔹5. 302-monitoring
+
+- 모니터링 3종 (`Alloy` / `Prometheus` / `Grafana`) 프로비저닝
+  - 수집 → `Alloy` (데몬셋)
+  - 메트릭 시계열 저장 → `Prometheus` (디플로이먼트)
+  - 시각화 → `Grafana` (디플로이먼트)
+- `Prometheus/Grafana` 는 `values.yaml` 의 `nodeNames(nodeAffinity)`로 배치 노드를 고정
+- `Alloy` 는 `DaemonSet` 이라 `nodeAffinity` 대상이 아님
+- **설정 `ConfigMap` 3종(`alloy-config`/`prometheus-config`/`grafana-datasource`)을 이 차트가 소유 → 파드의 `checksum` 어노테이션이 해시를 들고 있어 helm upgrade 만으로 자동 롤아웃**
+- **사전 준비: `300-data-layer-base` 배포 완료 + `Harbor` 에 이미지 `push` 완료(`build_and_push.sh`)**
+
+
+```bash
+# 1. 302-monitoring 검증
+# → 공용 값은 values.common.yaml에서 주입
+helm lint 302-monitoring -f values.common.yaml
+helm template monitoring 302-monitoring -f values.common.yaml
+
+# 2. 302-monitoring 설치
+# → data-layer Namespace에 배포
+helm install monitoring ./302-monitoring \
+  -f values.common.yaml -n data-layer
+
+
+[검증]
+# 1. Helm Release 상태
+# → STATUS = deployed
+helm -n data-layer ls
+
+# 2. 워크로드 상태
+# → Alloy는 모든 Node에 1개 / Prometheus·Grafana는 1개
+kubectl -n data-layer get ds/alloy deploy/prometheus deploy/grafana
+
+# 3. Pod 배치 확인
+# → Prometheus·Grafana는 지정 Node / Alloy는 전체 Node
+kubectl -n data-layer get pod -o wide \
+  -l app.kubernetes.io/part-of=data-layer
+
+# 4. ConfigMap 및 Helm 소유권 확인
+kubectl -n data-layer get cm \
+  alloy-config prometheus-config grafana-datasource
+
+kubectl -n data-layer get cm prometheus-config \
+  -o jsonpath='{.metadata.annotations.meta\.helm\.sh/release-name}'
+
+→ 결과가 monitoring인지 확인
+
+# 5. PVC 상태
+# → Prometheus·Grafana PVC가 Longhorn에 정상 바인딩됐는지 확인
+kubectl -n data-layer get pvc prometheus-data grafana-data
+
+# 6. Grafana → Prometheus 연결 확인
+# → Service FQDN으로 설정됐는지 확인
+kubectl -n data-layer get cm grafana-datasource \
+  -o jsonpath='{.data.datasource\.yml}' | grep url
+
+→ http://prometheus.data-layer.svc.cluster.local:9090
+
+# 7. Prometheus Target 상태
+# → 5개 Target이 모두 UP인지 확인
+# → 모두 비어 있으면 Kubernetes API 조회 권한(RBAC) 확인
+# http://data-layer-prometheus/targets
+
+# 8. Grafana 자동 프로비저닝 확인
+# → Prometheus Data Source 및 Dashboard 생성 여부 확인
+# http://data-layer-grafana
+```
+
+---
+
+### 🔹 6. 303-postgres
+
+- **CNPG 기반 PostgreSQL 클러스터 배포**
+  - `Cluster`와 `Database`를 선언하면 **CNPG Operator가 Pod / PVC / 복제 / Failover를 관리**한다.
+  - PostgreSQL 인스턴스 2개(`Primary 1 + Replica 1`)를 배치한다.
+  - 외부 접속은 MetalLB VIP `192.168.56.241:5432`를 사용한다.
+
+- **DB 초기화**
+  - `postInitApplicationSQL` → Extension / Schema / Table / Hypertable 생성
+  - `Database CR` → `airflow` / `iceberg_catalog` DB 생성
+
+
+- **설치 전제**
+  - `103-cnpg` → CNPG CRD / Operator
+  - `300-data-layer-base` → Namespace / Secret
+  - 위 두 스택이 먼저 설치되어 있어야 한다.
+  - PostgreSQL 이미지 태그는 CNPG가 인식할 수 있도록 `16.15-v0.1.0`처럼 **PostgreSQL 버전으로 시작해야 한다.**
+
+- **주의**
+  - `helm uninstall` 시 Cluster와 PVC가 삭제될 수 있으므로 **운영 데이터가 있는 환경에서는 주의한다.**
+
+```bash
+# 303-postgres 설치
+helm install postgres ./303-postgres \
+  -f values.common.yaml \
+  -n data-layer
+
+
+[검증]
+# 1. PostgreSQL Cluster 상태
+kubectl -n data-layer get cluster
+
+# 2. Pod 및 Node 배치
+kubectl -n data-layer get pod -o wide
+
+# 3. Service 및 MetalLB VIP
+kubectl -n data-layer get svc
+
+# 4. Database 생성 상태
+kubectl -n data-layer get database
+
+# 5. heidiSQL 실제 접속 해보기
+
+```
+
+
+---
+
+### 🔹 7. 304-airflow
+- **Airflow 3.1.5** → KubernetesExecutor 기반
+- **메타DB:** CNPG PostgreSQL
+- **로그:** Hadoop HDFS(WebHDFS)
+- **DAG/코드:** 각 노드의 hostPath 공유 구조
+
+```bash
+# =====================================================
+# 0. 배포 전제
+# =====================================================
+
+# 필수 선행 스택
+# - 300-data-layer-base : 공통 Secret/ConfigMap, 태스크 파드 생성 권한
+# - 303-postgres        : Airflow 메타DB
+# - 301-hadoop          : WebHDFS 로그 저장소
+# - 301-minio           : DAG에서 사용하는 config 데이터
+
+# DAG/코드는 모든 노드에 동일하게 배포
+# → /data/airflow-repo/{dags,collector,processor,publisher,utils}
+bin/start_airflow_repo_prereq.sh <ansible_dir> all
+
+# HDFS 로그 디렉터리 준비
+kubectl -n data-layer exec hadoop-namenode-0 -c namenode -- \
+  hdfs dfs -mkdir -p /airflow-logs
+
+kubectl -n data-layer exec hadoop-namenode-0 -c namenode -- \
+  hdfs dfs -chown airflow:supergroup /airflow-logs
+
+# Airflow 이미지가 Harbor에 있어야 함
+./scripts/build_and_push.sh v0.1.0 airflow
+
+
+# =====================================================
+# 1. Helm 배포
+# =====================================================
+
+helm lint 304-airflow -f values.common.yaml
+helm template airflow 304-airflow -f values.common.yaml
+
+helm install airflow ./304-airflow \
+  -f values.common.yaml \
+  -n data-layer \
+  --timeout 10m
+
+# --timeout 10m : 초기 DB migration Job에 시간이 필요
+# --wait / --atomic : 사용하지 않음
+# 초기 CrashLoopBackOff : airflow-init 완료 전까지 정상
+
+
+# =====================================================
+# 2. 배포 상태 확인
+# =====================================================
+
+helm -n data-layer status airflow
+
+kubectl -n data-layer get deploy,job,svc,ing \
+  -l app.kubernetes.io/name=airflow
+
+kubectl -n data-layer get pod \
+  -l app.kubernetes.io/name=airflow -o wide
+
+# 정상 상태
+# - api-server       1/1
+# - scheduler        1/1
+# - dag-processor    1/1
+# - triggerer        0/0 (랩 환경)
+# - airflow-init     Completed
+
+# 초기화 완료 확인
+kubectl -n data-layer logs job/airflow-init | tail -5
+
+
+# =====================================================
+# 3. Airflow 정상 동작 확인
+# =====================================================
+
+# API / 전체 헬스
+curl -s http://data-layer-airflow/api/v2/monitor/health
+
+# Scheduler
+kubectl -n data-layer exec deploy/airflow-scheduler -- \
+  curl -s localhost:8974/health
+
+# DAG 목록 / Import 오류 확인
+kubectl -n data-layer exec deploy/airflow-dag-processor -- \
+  airflow dags list
+
+kubectl -n data-layer exec deploy/airflow-dag-processor -- \
+  airflow dags list-import-errors
+
+# Variable / Connection 확인
+kubectl -n data-layer exec deploy/airflow-scheduler -- \
+  airflow variables get collector_db_query
+
+kubectl -n data-layer exec deploy/airflow-scheduler -- \
+  airflow connections get collector_db
+
+
+# =====================================================
+# 4. DAG 실행 검증
+# =====================================================
+
+# DAG 활성화 후 실행
+kubectl -n data-layer exec deploy/airflow-scheduler -- \
+  airflow dags unpause Batch_Data_Collector
+
+kubectl -n data-layer exec deploy/airflow-scheduler -- \
+  airflow dags trigger Batch_Data_Collector
+
+# KubernetesExecutor → 태스크마다 Worker Pod 생성
+kubectl -n data-layer get pod \
+  -l app.kubernetes.io/component=worker -w
+
+# 실행 중 로그는 Worker Pod에서 확인
+kubectl -n data-layer logs <worker-pod>
+
+
+# =====================================================
+# 5. HDFS 로그 확인
+# =====================================================
+
+# Worker 종료 후 HDFS에 로그 저장 여부 확인
+curl -s \
+  "http://192.168.56.39:9870/webhdfs/v1/airflow-logs?op=LISTSTATUS"
+
+# → dag_id 기준 로그 디렉터리 생성 확인
+# ※ Standby NN이면 Active NN 주소 사용
+
+
+# =====================================================
+# 6. DAG / 코드 반영
+# =====================================================
+
+# 코드 변경 → 이미지 재빌드 없이 전체 노드 동기화
+bin/start_airflow_repo_prereq.sh <ansible_dir> sync
+
+# 모든 노드의 /data/airflow-repo 가 동일해야 함
+# requirements.txt 변경 시에만 이미지 재빌드
+
+
+# =====================================================
+# 7. 운영
+# =====================================================
+
+# values 변경 시 Helm Upgrade
+helm upgrade airflow ./304-airflow \
+  -f values.common.yaml \
+  -n data-layer \
+  --timeout 10m
+
+# 실패한 Worker Pod 정리
+kubectl -n data-layer delete pod \
+  -l app.kubernetes.io/component=worker \
+  --field-selector=status.phase=Failed
+
+# Deferrable Operator 사용 시 triggerer replicas=1 이상 필요
+
+# 삭제
+helm uninstall airflow -n data-layer
+kubectl -n data-layer delete job airflow-init
+```
+
+---
+
+### 🔹 8. 305-api
+
+- **data-layer-api 관리 화면 + REST API**
+- Deployment 1 / Service 1 / Ingress 1 / PVC 없음
+- replicas **1 고정** → DQ가 매퍼 Pod를 제어하므로 동시성 충돌 방지
+- `hostAliases` → `global.ingressVip` 기준으로 내부 서비스 이름 해석
+
+```bash
+# =====================================================
+# 1. 배포
+# =====================================================
+
+helm lint 305-api -f values.common.yaml
+helm template api ./305-api -f values.common.yaml
+helm install api ./305-api -f values.common.yaml -n data-layer
+
+# =====================================================
+# 2. 검증
+# =====================================================
+
+helm -n data-layer status api
+# → STATUS = deployed
+
+kubectl -n data-layer get deploy,svc,ing \
+  -l app=data-layer-api
+# → Deployment 1/1 · Service :8090 · Ingress data-layer-api
+
+# hostAliases 확인
+kubectl -n data-layer exec deploy/data-layer-api -- \
+  getent hosts data-layer-grafana
+
+# API 응답
+curl -s http://data-layer-api/health
+# → 200
+```
+
+---
+
+### 🔹 9. 306-cdc
+
+- **Kafka Connect + Debezium CDC 워커**
+- Deployment 1 / replicas **2**
+- Service `cdc-connect:8083` → Kafka Connect REST API
+- Connect 상태는 **Kafka 내부 토픽 3종**에 저장
+- 실제 Connector 등록은 **관리 화면 또는 REST API**에서 수행
+
+```bash
+# =====================================================
+# 1. Helm 배포
+# =====================================================
+
+helm lint 306-cdc -f values.common.yaml
+helm template cdc ./306-cdc -f values.common.yaml
+
+helm install cdc ./306-cdc \
+  -f values.common.yaml \
+  -n data-layer
+
+# ※ Debezium Plugin 스캔으로 첫 Ready까지 수 분 소요 가능
+# → startupProbe 최대 300초
+
+
+# =====================================================
+# 2. 배포 상태 확인
+# =====================================================
+
+helm -n data-layer status cdc
+# → STATUS = deployed
+
+kubectl -n data-layer get deploy,pod,svc \
+  -l app=cdc-connect -o wide
+
+# → Worker 2개 2/2 Ready
+# → 가능하면 서로 다른 노드에 배치
+
+
+# =====================================================
+# 3. Kafka Connect REST 확인
+# =====================================================
+
+kubectl -n data-layer exec deploy/cdc-connect -- \
+  curl -s localhost:8083/
+
+# → Connect 버전 / Kafka Cluster 정보 확인
+
+kubectl -n data-layer exec deploy/cdc-connect -- \
+  curl -s localhost:8083/connectors
+
+# → [] : 아직 Connector 미등록
+
+
+# =====================================================
+# 4. Connect 내부 토픽 확인
+# =====================================================
+
+kubectl -n data-layer exec kafka-0 -- \
+  /opt/kafka/bin/kafka-topics.sh \
+  --bootstrap-server localhost:9092 \
+  --list | grep connect-
+
+# → connect-configs
+# → connect-offsets
+# → connect-status
+#
+# Connector 설정 / Offset / 상태 정보를 Kafka에 저장
+```
+
+
+---
+
+
+### 🔹 10. 307-pipeline
+
+- **CDM 데이터 파이프라인 워커**
+- Deployment **13개**
+  - Mapper 8
+  - Consumer 3
+  - Lineage 1
+  - TCP Collector 1
+- PVC / Probe 없음
+- TCP Collector는 **`ingest=true` 노드에서 hostNetwork로 실행**
+- Mapper는 `cdm.mapper/module` 라벨을 사용 → 305-api의 DQ 제어 대상
+
+```bash
+# =====================================================
+# 0. 수집 노드 지정
+# =====================================================
+
+# 실제 장비에서 패킷을 받을 노드에 라벨 지정
+kubectl label node s2 ingest=true
+
+
+# =====================================================
+# 1. Helm 배포
+# =====================================================
+
+helm lint 307-pipeline -f values.common.yaml
+helm template pipeline ./307-pipeline -f values.common.yaml
+
+helm install pipeline ./307-pipeline \
+  -f values.common.yaml \
+  -n data-layer
+
+
+# =====================================================
+# 2. 배포 상태 확인
+# =====================================================
+
+helm -n data-layer status pipeline
+# → STATUS = deployed
+
+
+# =====================================================
+# 3. Mapper 확인
+# =====================================================
+
+kubectl -n data-layer get pod \
+  -l app=cdm-mapper \
+  -L cdm.mapper/module
+
+# → Mapper 8개 Running
+# → MODULE 컬럼으로 Mapper 종류 확인
+
+
+# =====================================================
+# 4. Consumer / Lineage 확인
+# =====================================================
+
+kubectl -n data-layer get deploy \
+  -l app.kubernetes.io/component=cdm-consumer
+
+# → rdb / graph / warehouse 각 1개
+
+kubectl -n data-layer get deploy cdm-lineage-consumer
+
+# → 1/1
+
+
+# =====================================================
+# 5. TCP Collector 확인
+# =====================================================
+
+kubectl -n data-layer get pod \
+  -l app=tcp-socket-collector -o wide
+
+# → NODE=s2
+# → hostNetwork 사용 → Pod IP가 아닌 Node IP로 동작
+
+
+# =====================================================
+# 6. 파이프라인 상태 확인
+# =====================================================
+
+# 별도 Probe가 없으므로 Kafka Consumer Lag으로 확인
+# → Grafana > Kafka Dashboard > Consumer Group Lag
+
+# Lag 증가 지속 → Consumer 처리 지연/장애 확인
+```
+
+---
+
+### 🔹 11. 400-test-rdb
+
+- **CDC 테스트용 RDB 4종** → Oracle / MSSQL / PostgreSQL / MySQL
+- StatefulSet 4 / Service 4 / PVC 4
+- 저장소: **local-path**
+- 초기화 스크립트는 `files/`에서 관리
+- 테스트 전용 → 공용 ConfigMap/Secret 사용하지 않음
+
+```bash
+# =====================================================
+# 1. Helm 배포
+# =====================================================
+
+helm lint 400-test-rdb -f values.common.yaml
+helm template test-rdb ./400-test-rdb -f values.common.yaml
+
+helm install test-rdb ./400-test-rdb \
+  -f values.common.yaml \
+  -n data-layer \
+  --timeout 20m
+
+# ※ 첫 배포는 이미지 Pull + DB 초기화로 수 분 소요
+
+
+# =====================================================
+# 2. 배포 상태 확인
+# =====================================================
+
+helm -n data-layer status test-rdb
+# → STATUS = deployed
+
+kubectl -n data-layer get sts,pod,pvc,svc \
+  -l app.kubernetes.io/component=test-rdb
+
+# → DB 4종 1/1
+# → PVC Bound
+# → Service 4개
+
+
+# =====================================================
+# 3. CDC 초기화 확인
+# =====================================================
+
+# MSSQL
+kubectl -n data-layer logs job/cdc-mssql-init
+# → is_cdc_enabled=1
+
+# Oracle
+kubectl -n data-layer logs cdc-oracle-0 | grep '초기화 완료'
+# → Debezium 계정 / LOGMINER / 보충 로깅 확인
+
+# PostgreSQL
+kubectl -n data-layer exec cdc-postgres-0 -- \
+  psql -U cdc -d cdc -c '\dRp'
+# → cdc_test_pub
+
+# MySQL
+kubectl -n data-layer exec cdc-mysql-0 -- \
+  sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" \
+  -e "SHOW GRANTS FOR cdc@\"%\""'
+# → REPLICATION SLAVE / CLIENT
+
+
+# =====================================================
+# 4. 로컬 DB 접속
+# =====================================================
+
+kubectl -n data-layer port-forward svc/cdc-oracle 11521:1521
+kubectl -n data-layer port-forward svc/cdc-mssql 11433:1433
+kubectl -n data-layer port-forward svc/cdc-postgres 15432:5432
+kubectl -n data-layer port-forward svc/cdc-mysql 13306:3306
+
+
+# =====================================================
+# [주의]
+# =====================================================
+
+# Oracle / PostgreSQL / MySQL 초기화
+# → 빈 PVC에서 최초 1회만 수행
+# → 초기 상태로 재생성하려면 PVC 삭제 후 재배포
+
+# helm uninstall 시 PVC는 남음
+
+# Oracle 메모리 부족 시
+# → oracle.sgaTarget / pgaAggregateTarget 값을 낮춤
+```
+
+---
+
+
+
+
+---
+
 
 ---
 </br>
@@ -365,17 +1422,16 @@ kubectl get clusterrolebinding data-layer-default-admin → default SA 에 clust
 `Terraform`/`Helm` 을 실행하기 전에 아래 작업이 **먼저 완료되어야 합니다.**
 준비되지 않은 상태에서 배포하면 일부 서비스가 정상적으로 실행되지 않습니다.
 
-| 대상 | 먼저 해야 할 작업 | 준비되지 않으면 |
-|------|------------------|----------------|
-| **~~** |  |  |
-
+| 대상 | 먼저 해야 할 작업 |
+|------|------------------|
+| **~~** |  |
 
 ---
 </br>
 
 # 🏗️ Terraform 공통 설정 (versions.tf / providers.tf)
 
-모든 스택은 동일한 Terraform 버전과 변수 관리 기준을 사용합니다.
+- 모든 스택은 동일한 `Terraform` 버전과 변수 관리 기준을 사용합니다.
 
 ## 1. Terraform / Provider
 
@@ -389,13 +1445,13 @@ kubectl get clusterrolebinding data-layer-default-admin → default SA 에 clust
 | `helm 3.2.0` | `100`, `101`, `102`, `200` | Helm Chart 배포 |
 | `harbor 3.10.21` | `200` | Harbor API 설정 |
 
-> `100`, `101`, `200`은 Helm Chart 기반으로 구성하므로 `kubernetes` Provider를 사용하지 않습니다.
+> `100`, `101`, `200`은 `Helm Chart` 기반으로 구성하므로 `kubernetes` Provider를 사용하지 않습니다.
 
 ---
 
-## 2. 변수 / Secret 관리
+## 2. 변수 / `Secret` 관리
 
-모든 변수는 **`variables.tf`에 `default`를 지정하지 않고 `terraform.tfvars`에서 명시적으로 관리**합니다.
+- 모든 변수는 **`variables.tf`에 `default`를 지정하지 않고 `terraform.tfvars`에서 명시적으로 관리**합니다.
 
 | 파일 | 용도 |
 |---|---|
@@ -408,7 +1464,7 @@ kubectl get clusterrolebinding data-layer-default-admin → default SA 에 clust
 
 ## 3. `terraform.tfvars`
 
-환경에 따라 변경되는 **모든 일반 설정값을 정의**합니다.
+- 환경에 따라 변경되는 **모든 일반 설정값을 정의**합니다.
 
 ```hcl
 # Kubernetes / Node
@@ -447,14 +1503,12 @@ db_password     = "..."
 
 ## 5. 핵심 원칙
 - `variables.tf` = 변수 정의
-- `terraform.tfvars` = 환경 설정값
+- `terraform.tfvars` = 변수 값
 - `secrets.auto.tfvars` = 민감 정보
 - `default` = 사용하지 않음
 
 ---
 </br>
-
-
 
 # 🌐 외부 접속 (MetalLB VIP + Ingress)
 > HTTP 서비스는 `MetalLB VIP` 하나로 모이고, `Ingress`가 호스트명으로 갈라 보냅니다.
@@ -469,47 +1523,20 @@ db_password     = "..."
 | 서비스 | 용도 | 접속 주소 | 노출 방식 | 스택 |
 |---|---|---|---|---|
 | Harbor | 컨테이너 이미지 저장소 | http://data-layer-harbor | Ingress | `200-harbor` |
-| Kafka UI | Kafka 상태 확인 및 관리 | http://data-layer-kafka-ui | Ingress | `301-kafka-tools` |
+| Kafka UI | Kafka 상태 확인 및 관리 | http://data-layer-kafka-ui | Ingress | `301-kafka` |
 | Prometheus | 메트릭 수집/조회 | http://data-layer-prometheus | Ingress | `302-monitoring` |
 | Grafana | 모니터링 대시보드 | http://data-layer-grafana | Ingress | `302-monitoring` |
 | Airflow | 데이터 파이프라인 관리 | http://data-layer-airflow | Ingress | `304-airflow` |
 | Data API | 데이터 레이어 API | http://data-layer-api | Ingress | `305-api` |
 | PostgreSQL | 플랫폼 메타 DB (DBeaver 등 외부 도구) | 192.168.56.241:5432 | **전용 VIP (LoadBalancer)** | `303-postgres` (VIP 풀은 `102-ingress`) |
 
-### ⚠️ PostgreSQL 만 전용 VIP 를 씁니다 (NodePort 는 이제 없습니다)
-
-DB 프로토콜은 HTTP 가 아니라 **Host 헤더가 없어** 인그레스(L7)를 못 탑니다. NodePort 는 30000-32767 제약 때문에 표준 포트 5432 를 지킬 수 없어, MetalLB VIP 하나(`postgres-vip` 풀)를 따로 받아 `:5432` 그대로 엽니다. 장애 전환은 인그레스 VIP 와 같은 원리로 MetalLB 가 합니다. (구 303-git 의 NodePort 30418 은 스택 퇴역과 함께 사라져 **NodePort 는 더 이상 없습니다.**)
-
-### 📌 위 표에 테스트 DB가 없는 이유
-
-`400-test-rdb`의 소스 DB 4종은 **외부에 열지 않습니다.** 접속하는 쪽(Kafka Connect·Airflow)이 전부 클러스터 안이라 Service 이름으로 충분합니다. 사람이 DB 클라이언트로 볼 때만 `kubectl port-forward`를 씁니다 → [400-test-rdb 스택](#-cdc-소스-rdb-스택-400-test-rdb--테스트-픽스처)
-
-### ⚠️ Harbor는 주소가 아니라 "이미지 이름"입니다
-
-```
-data-layer-harbor/data-layer/kafka-ui:v0.1.0
-└───────┬───────┘
-   레지스트리 = 이미지 이름의 첫 마디
-```
-
-노드의 containerd는 이 앞마디와 **글자 그대로 같은** 폴더를 찾아 접속 규칙을 읽습니다.
-
-```
-/etc/containerd/certs.d/data-layer-harbor/hosts.toml
-                        └─── 이름이 곧 폴더명 ───┘
-```
-
-못 찾으면 기본값인 HTTPS로 붙어 `server gave HTTP response to HTTPS client`로 실패합니다.
-그래서 이 이름을 바꾸려면 **같은 커밋에서 5곳**이 함께 가야 합니다 — `harbor_host` / 전 스택 `harbor_registry` / `externalURL` / harbor 프로바이더 URL / Ansible `containerd_insecure_registries`.
-
-> **인그레스 뒤에서는 IP로 우회 pull이 불가능합니다.** 인그레스는 Host 헤더로 목적지를 고르는데, IP로 치면 헤더가 IP라서 어떤 규칙에도 걸리지 않고 404가 됩니다. 이름 해석이 의심되면 `/etc/hosts`와 VIP의 ARP 응답을 먼저 확인하세요.
 
 ### 📌 변경 관리 규칙
 
 - 호스트명을 변경할 경우 아래를 반드시 **같은 커밋**에서 함께 변경합니다.
   - 접속 정보 표 (이 표)
   - Terraform 각 스택 `variables.tf` 의 `<앱>_host`
-  - Helm 차트 `300-data-layer-base/values.yaml` 의 `<앱>Host` 미러 (`kafkaUiHost` · `airflowHost` · `grafanaHost`)
+  - Helm 차트 `300-data-layer-base/values.yaml` 의 `<앱>Host` 미러 (`kafkaUiHost` / `airflowHost` / `grafanaHost`)
   - Ansible `host.yml` 의 `data_layer_vip_dns_names`
 - VIP를 변경할 경우 세 곳이 **글자 그대로** 같아야 합니다.
   - Terraform `102-ingress/terraform.tfvars` 의 `ingress_vip`
@@ -532,10 +1559,11 @@ data-layer-harbor/data-layer/kafka-ui:v0.1.0
 - 예시: `data-layer-harbor.local`
 - `.local`은 일반 DNS 이름이 아니라 PC 내부 네트워크 자동 검색(mDNS)에 예약된 도메인입니다.
 - `Kubernetes` 서비스 접속 주소로 사용할 경우 운영체제가 `Kubernetes DNS` 대신 `mDNS`로 처리할 수 있어 환경별 접속 문제가 발생할 수 있습니다.
+
 ---
 </br>
 
-# 💾 스토리지 구성 (local-path vs longhorn)
+# 💾 쿠버네티스 스토리지 구성 (`local-path` vs `longhorn`)
 
 > 기준: **앱 자체적으로 데이터를 복제하는가?**
 >
@@ -546,7 +1574,7 @@ data-layer-harbor/data-layer/kafka-ui:v0.1.0
 |---|---|---|
 | `local-path` | Harbor Trivy 캐시 | 삭제되어도 다시 생성 가능한 임시 데이터 |
 | `local-path` | CDC 소스 RDB 4종 (`400-test-rdb`) | 테스트 데이터라 매일 01시 `cdc_seed_loader` DAG가 다시 채웁니다. 지켜야 할 원본이 없는데 Oracle 데이터파일(6.1G)을 2중 복제하면 랩 디스크만 소모합니다 |
-| `local-path` | 플랫폼 PostgreSQL (`303-postgres`) | 복제를 CNPG 가 앱 레벨(스트리밍 리플리케이션 3인스턴스)에서 합니다. longhorn 을 겹치면 3 × 2 = 6중 복제가 됩니다 |
+| `local-path` | 플랫폼 PostgreSQL (`303-postgres`) | 복제를 CNPG 가 앱 레벨(스트리밍 리플리케이션 2인스턴스)에서 합니다. longhorn 을 겹치면 2 × 2 = 4중 복제가 됩니다 |
 | `longhorn` | Harbor / Prometheus / Grafana | 노드 장애 시에도 데이터를 유지해야 하는 서비스 데이터 |
 
 ## 📌 Longhorn 적용 이유
