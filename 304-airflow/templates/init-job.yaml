@@ -1,0 +1,109 @@
+# ===============================================
+# [Airflow 초기화 Job]
+#   - 메타DB 마이그레이션 및 초기 관리자 계정 생성
+#   - Helm install/upgrade 시 실행
+# ===============================================
+
+apiVersion: batch/v1
+kind: Job
+
+metadata:
+  name: airflow-init
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: airflow-init
+    app.kubernetes.io/name: airflow
+    app.kubernetes.io/component: init
+    app.kubernetes.io/part-of: data-layer
+
+  annotations:
+    # 일반 리소스 생성 후 실행하여 Secret 등 의존 리소스가 준비된 뒤 실행
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-weight: "0"
+
+    # 재배포 시 기존 Hook Job 삭제 후 재생성
+    helm.sh/hook-delete-policy: before-hook-creation
+
+spec:
+  # 실패 시 Pod 재시작하지 않음
+  backoffLimit: 0
+
+  # Job 전체 실행 제한 시간
+  activeDeadlineSeconds: 480
+
+  template:
+    metadata:
+      labels:
+        app: airflow-init
+        app.kubernetes.io/name: airflow
+        app.kubernetes.io/component: init
+        app.kubernetes.io/part-of: data-layer
+
+    spec:
+      # Service 환경변수 자동 주입 비활성화
+      enableServiceLinks: false
+
+      # Job 재시작은 Job Controller가 관리
+      restartPolicy: Never
+
+      securityContext:
+        runAsUser: {{ .Values.securityContext.runAsUser }}
+        runAsGroup: {{ .Values.securityContext.fsGroup }}
+        fsGroup: {{ .Values.securityContext.fsGroup }}
+
+      containers:
+        - name: airflow-init
+          image: {{ .Values.global.harborRegistry }}/data-layer/airflow:{{ .Values.global.imageTag }}
+          imagePullPolicy: IfNotPresent
+
+          command:
+            - /bin/bash
+            - -c
+
+          args:
+            - |
+              set -euo pipefail
+
+              # PostgreSQL 연결 가능할 때까지 대기
+              END=$(( $(date +%s) + 300 ))
+              until airflow db check >/dev/null 2>&1; do
+                if [ "$(date +%s)" -ge "${END}" ]; then
+                  echo "PostgreSQL 연결 실패"
+                  exit 1
+                fi
+                echo "PostgreSQL 미응답 — 5초 후 재시도"
+                sleep 5
+              done
+
+              # 메타DB 마이그레이션
+              echo "Airflow 메타DB 마이그레이션..."
+              airflow db migrate
+
+              # 초기 관리자 계정 생성
+              echo "관리자 계정 확인/생성: ${AIRFLOW_ADMIN_USERNAME}"
+              airflow users create \
+                --username "${AIRFLOW_ADMIN_USERNAME}" \
+                --password "${AIRFLOW_ADMIN_PASSWORD}" \
+                --firstname "${AIRFLOW_ADMIN_FIRSTNAME}" \
+                --lastname "${AIRFLOW_ADMIN_LASTNAME}" \
+                --role Admin \
+                --email "${AIRFLOW_ADMIN_EMAIL}" \
+                || echo "이미 존재하는 계정 — 건너뜀"
+
+              echo "Airflow initialization completed."
+
+          envFrom:
+            - configMapRef:
+                name: data-layer-env
+            - secretRef:
+                name: data-layer-secrets
+            - secretRef:
+                name: airflow-env
+
+          # requests 는 당분간 주석 처리 — 노드 여유가 없어(ap CPU 95% · s1 메모리 96% 요청) 그대로는
+          # api-server 가 Pending 이라 스케줄러 검사를 빼고 띄운다(301-hadoop 과 같은 임시 조치).
+          # 대가: QoS 가 BestEffort 라 메모리 압박 시 먼저 evict 된다. 여유가 생기면 주석을 푼다.
+          # resources:
+          #   requests:
+          #     cpu: "10m"
+          #     memory: "128Mi"

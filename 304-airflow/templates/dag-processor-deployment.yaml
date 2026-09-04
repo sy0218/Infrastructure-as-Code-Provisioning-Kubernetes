@@ -1,0 +1,102 @@
+# ===============================================
+# [Airflow DAG Processor]
+#   - DAG 파일 파싱 전담 컴포넌트
+#   - Scheduler와 분리하여 파싱 장애가 스케줄링에 영향주지 않도록 구성
+#   - DAG/코드 디렉토리를 직접 마운트하여 파싱
+# ===============================================
+
+apiVersion: apps/v1
+kind: Deployment
+
+metadata:
+  name: airflow-dag-processor
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: airflow-dag-processor
+    app.kubernetes.io/name: airflow
+    app.kubernetes.io/component: dag-processor
+    app.kubernetes.io/part-of: data-layer
+
+spec:
+  replicas: {{ .Values.dagProcessor.replicas }}
+
+  # 단일 파드만 실행
+  strategy:
+    type: Recreate
+
+  selector:
+    matchLabels:
+      app: airflow-dag-processor
+
+  template:
+    metadata:
+      annotations:
+        # Secret 변경 시 Pod 자동 재시작
+        checksum/airflow-env: {{ include (print $.Template.BasePath "/secret-airflow-env.yaml") . | sha256sum }}
+
+      labels:
+        app: airflow-dag-processor
+        app.kubernetes.io/name: airflow
+        app.kubernetes.io/component: dag-processor
+        app.kubernetes.io/part-of: data-layer
+
+    spec:
+      # Service 환경변수 자동 주입 비활성화
+      enableServiceLinks: false
+
+      securityContext:
+        runAsUser: {{ .Values.securityContext.runAsUser }}
+        runAsGroup: {{ .Values.securityContext.fsGroup }}
+        fsGroup: {{ .Values.securityContext.fsGroup }}
+
+      containers:
+        - name: dag-processor
+          image: {{ .Values.global.harborRegistry }}/data-layer/airflow:{{ .Values.global.imageTag }}
+          imagePullPolicy: IfNotPresent
+
+          args: ["dag-processor"]
+
+          envFrom:
+            - configMapRef:
+                name: data-layer-env
+            - secretRef:
+                name: data-layer-secrets
+            - secretRef:
+                name: airflow-env
+
+          # DAG Processor Job 상태 확인
+          livenessProbe:
+            exec:
+              command:
+                - /bin/bash
+                - -c
+                - airflow jobs check --job-type DagProcessorJob --local
+            initialDelaySeconds: 60
+            periodSeconds: 60
+            timeoutSeconds: 30
+            failureThreshold: 5
+
+          # requests 는 당분간 주석 처리 — 노드 여유가 없어(ap CPU 95% · s1 메모리 96% 요청) 그대로는
+          # api-server 가 Pending 이라 스케줄러 검사를 빼고 띄운다(301-hadoop 과 같은 임시 조치).
+          # 대가: QoS 가 BestEffort 라 메모리 압박 시 먼저 evict 된다. 여유가 생기면 주석을 푼다.
+          # resources:
+          #   requests:
+          #     cpu: "50m"
+          #     memory: "256Mi"
+
+          # DAG/코드 디렉토리 마운트
+          volumeMounts:
+            {{- range .Values.repo.dirs }}
+            - name: repo-{{ . }}
+              mountPath: {{ printf "%s/%s" $.Values.airflowHome . | quote }}
+              readOnly: true
+            {{- end }}
+
+      volumes:
+        # 각 노드에 동기화된 DAG/코드 디렉토리 사용
+        {{- range .Values.repo.dirs }}
+        - name: repo-{{ . }}
+          hostPath:
+            path: {{ printf "%s/%s" $.Values.repo.hostPath . | quote }}
+            type: Directory
+        {{- end }}

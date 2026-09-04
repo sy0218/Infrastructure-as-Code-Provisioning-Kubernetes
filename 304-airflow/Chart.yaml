@@ -1,0 +1,27 @@
+# ===================================================
+# [304-airflow]
+#
+# Airflow 3 구성요소를 배포한다.
+#   - api-server / scheduler / dag-processor / triggerer
+#   - 메타DB 초기화 및 관리자 생성 Job
+#   - KubernetesExecutor Task Pod Template
+#
+# 설계
+#   - DAG 및 커스텀 코드는 이미지에 포함하지 않고 노드 hostPath로 제공
+#   - rsync로 모든 스케줄 대상 노드에 동일한 코드 유지
+#   - Task 로그는 Hadoop WebHDFS 원격 저장 (native RPC 미지원 — WebHDFSHook 고정)
+#   - KubernetesExecutor가 Task를 개별 Pod로 실행
+#   - requirements.txt 변경 시에만 이미지 재빌드
+#
+# 의존성
+#   - 300-data-layer-base: Namespace / 공용 ConfigMap·Secret / API 권한
+#   - 303-postgres: Airflow 메타DB
+#   - Ansible: 노드 DAG 디렉토리 준비 및 코드 동기화
+# ===================================================
+apiVersion: v2
+name: airflow
+description: "Airflow 3 → api-server / scheduler / dag-processor / triggerer + 초기화 Job · KubernetesExecutor Pod Template · Service/Ingress"
+type: application
+
+# Chart 버전 (업그레이드 시 명시적으로 변경)
+version: 0.1.0

@@ -1,0 +1,147 @@
+# ===============================================
+# [values.yaml → 304-airflow 전용 설정]
+#   - 공통값(global.*)은 values.common.yaml에서 관리한다.
+# ===============================================
+
+
+# ===============================================
+# [DAG 코드]
+#   - DAG 및 커스텀 코드는 이미지에 포함하지 않고,
+#   - 모든 노드에 rsync로 동기화한 hostPath를 readOnly로 마운트한다.
+# ===============================================
+
+# Airflow 기본 작업 디렉토리
+airflowHome: "/opt/airflow"
+
+repo:
+  # 노드의 DAG 소스 디렉토리 (rsync 동기화 대상)
+  # Ansible airflow_repo_prereq 롤(group_vars/airflow.yml 의 airflow_repo_dir)과 글자 그대로 같아야 한다
+  hostPath: "/data/airflow-repo"
+
+  # 필요한 디렉토리만 airflowHome 아래에 개별 마운트
+  # [주의] logs/config/plugins는 Airflow가 직접 관리하므로 마운트하지 않는다.
+  dirs:
+    - dags        # DAG 파일
+    - collector   # DAG에서 사용하는 커스텀 패키지
+    - processor
+    - publisher
+    - utils
+
+
+# ===============================================
+# [Timezone]
+# ===============================================
+timezone: "Asia/Seoul"
+
+
+# ===============================================
+# [컴포넌트 복제 수 / 포트]
+# ===============================================
+apiserver:
+  replicas: 1
+  port: 8080
+
+scheduler:
+  replicas: 1
+
+dagProcessor:
+  replicas: 1
+
+triggerer:
+  # Deferrable Operator 사용 시 활성화
+  replicas: 0
+
+
+# ===============================================
+# [Airflow 실행 설정]
+# ===============================================
+
+# 태스크를 Kubernetes Pod로 실행
+executor: "KubernetesExecutor"
+
+# Scheduler가 사용하는 Task Pod Template 경로
+podTemplateDir: "/opt/airflow/pod-template"
+
+# 클러스터 전체 / DAG별 동시 실행 태스크 제한
+parallelism: 10
+maxActiveTasksPerDag: 4
+
+# DAG 변경 감지 주기(초)
+dagRefreshInterval: 30
+
+# Airflow 로그 레벨
+logLevel: "INFO"
+
+
+# ===============================================
+# [Task 로그 → Hadoop WebHDFS]
+# ===============================================
+logs:
+  remoteBaseFolder: "hdfs:///airflow-logs"
+
+  # AIRFLOW_CONN_WEBHDFS_LOGS 환경변수로 사용
+  connId: "webhdfs_logs"
+
+webhdfs:
+  # WebHDFS는 hdfs-site.xml의 Logical Nameservice를 사용하지 않으므로
+  # NameNode HTTP 주소를 나열하여 Active 노드에 연결.
+  # Active 전환 시 다른 NameNode로 자동 연결.
+  hosts: "192.168.56.38,192.168.56.39"
+  port: 9870          # NameNode HTTP 포트 (HttpFS: 14000)
+  user: "airflow"     # 비-Kerberos 환경의 WebHDFS 사용자
+
+
+# ===============================================
+# [DAG 이 읽는 Airflow Variable / Connection]
+#   - 구 compose 의 scripts/airflow.conf 를 승계 — Secret airflow-env 가 AIRFLOW_VAR_* / AIRFLOW_CONN_* env 로 만든다.
+#   - 접속값(메타DB 호스트·Kafka bootstrap·크립토 키)은 여기 없다: global 에서 파생한다.
+# ===============================================
+collector:
+  # Variable collector_db_query — 수집 대상 Job 조회 SQL (%s = run_hours 파라미터)
+  dbQuery: "SELECT job_id, job_name, collector_type, processor_name, topic, config FROM data_pipeline.collect_job WHERE enabled = TRUE AND %s = ANY(run_hours);"
+
+  # Variable collector_kafka_config — 프로듀서 튜닝 (bootstrap 은 Connection collector_kafka 가 global.kafka.brokers 에서 파생)
+  kafka:
+    acks: 1
+    retries: 3
+
+  # Variable collector_snapshot_config — rotator_test_data / cdc_seed_loader 가 보는 스냅샷 루트
+  snapshot:
+    dataRoot: "/jsy/data_test"
+    retentionDays: 3
+
+  # Connection data_node_ssh — 스냅샷이 놓인 데이터 노드(ap). 비밀번호는 secrets.dataNodePassword
+  dataNode:
+    host: "192.168.56.38"
+    port: 22
+    user: "root"
+
+
+# ===============================================
+# [실행 계정]
+#   - apache/airflow 이미지 기본 권한 정책
+# ===============================================
+securityContext:
+  runAsUser: 50000
+  fsGroup: 0
+
+
+# ===============================================
+# [Airflow 전용 Secret]
+#   - 공통 Secret은 global.secrets에서 관리한다.
+#   - 운영 환경에서는 SealedSecrets 또는 SOPS 사용.
+# ===============================================
+secrets:
+  # Airflow 메타데이터 암호화 키
+  fernetKey: "gqK-Zndp9NivexPVkY2umbLMS4r9-Sg9gmgZ5vd7Xtc="
+
+  # Airflow 컴포넌트 간 인증/서명 키
+  apiSecretKey: "wEc6cXXuAGIEg93jpoZQSn0cZAUa9LBT0uwijzHS0vQ="
+  jwtSecret: "cZzxGk6srDlh1dqcdW+mDdi1SmXuKsfiw2HCC5XVOU0="
+
+  # 초기 관리자 계정
+  adminUsername: "airflow"
+  adminPassword: "airflow"
+
+  # Connection data_node_ssh 의 비밀번호 (Ansible root_password 와 같은 값)
+  dataNodePassword: "1234"

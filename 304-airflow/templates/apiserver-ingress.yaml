@@ -1,0 +1,35 @@
+# ===============================================
+# [Airflow API Server Ingress]
+# - Host 기반으로 UI/REST 요청을 API Server로 전달
+# - host는 AIRFLOW__API__BASE_URL과 동일해야 함
+# - Execution API는 Ingress를 거치지 않고 ClusterIP로 직접 통신
+# ===============================================
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+
+metadata:
+  name: airflow-apiserver
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: airflow-apiserver
+    app.kubernetes.io/name: airflow
+    app.kubernetes.io/component: apiserver
+    app.kubernetes.io/part-of: data-layer
+
+spec:
+  # Ingress Controller 지정
+  ingressClassName: {{ .Values.global.ingressClassName }}
+
+  rules:
+    # AIRFLOW__API__BASE_URL과 동일한 Host 사용
+    - host: {{ .Values.global.hosts.airflow }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: airflow-apiserver
+                port:
+                  number: {{ .Values.apiserver.port }}

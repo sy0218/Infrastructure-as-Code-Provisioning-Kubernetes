@@ -1,0 +1,74 @@
+[Airflow 배포 완료]
+Release: {{ .Release.Name }}
+Chart  : {{ .Chart.Name }}-{{ .Chart.Version }}
+Image  : {{ .Values.global.harborRegistry }}/data-layer/airflow:{{ .Values.global.imageTag }}
+
+
+[구성]
+1. api-server   Deployment({{ .Values.apiserver.replicas }}) + Service + Ingress
+   - UI / REST : http://{{ .Values.global.hosts.airflow }}
+   - Execution API : http://airflow-apiserver:{{ .Values.apiserver.port }}/execution/
+
+2. scheduler   Deployment({{ .Values.scheduler.replicas }})
+   - {{ .Values.executor }} : 태스크별 Pod 생성
+   - Pod Template : airflow-pod-template
+   - 동시 실행 : {{ .Values.parallelism }}
+
+3. dag-processor   Deployment({{ .Values.dagProcessor.replicas }})
+   - DAG 파싱 / {{ .Values.dagRefreshInterval }}초 주기 재스캔
+
+4. triggerer   Deployment({{ .Values.triggerer.replicas }})
+{{- if eq (int .Values.triggerer.replicas) 0 }}
+   - ⚠ 0 replicas → Deferrable Operator 사용 불가
+{{- end }}
+
+5. airflow-init   Job
+   - Helm hook : post-install,post-upgrade
+   - 메타DB 마이그레이션 + 관리자 계정 생성
+   - 완료 전 Helm 배포 대기
+
+
+[스토리지]
+- DAG / 커스텀 코드
+  {{ .Values.repo.hostPath }}/<이름>
+  → {{ .Values.airflowHome }}/<이름> (readOnly hostPath)
+
+- Task 로그
+  {{ .Values.logs.remoteBaseFolder }}
+  → WebHDFS {{ .Values.webhdfs.hosts }}:{{ .Values.webhdfs.port }}
+
+- 메타DB
+  {{ include "airflow.postgresHost" . }}:{{ .Values.global.postgres.port }}/{{ .Values.global.postgres.databases.airflow }}
+
+- PVC 없음
+
+
+[배포 전제]
+- 300-data-layer-base : Namespace / 공용 설정 / Pod 생성 권한
+- 303-postgres : Airflow 메타DB
+- Harbor : airflow:{{ .Values.global.imageTag }}
+- 3노드 : {{ .Values.repo.hostPath }} 디렉토리 + DAG/코드 rsync
+- Hadoop : WebHDFS {{ .Values.webhdfs.port }} + 로그 경로
+
+
+[확인]
+kubectl -n {{ .Values.global.namespace }} logs job/airflow-init
+kubectl -n {{ .Values.global.namespace }} rollout status deploy/airflow-apiserver
+kubectl -n {{ .Values.global.namespace }} get deploy,job,svc,ing -l app.kubernetes.io/name=airflow
+
+→ http://{{ .Values.global.hosts.airflow }}
+→ 계정 : {{ .Values.secrets.adminUsername }}
+
+
+[운영 주의]
+- 설정 변경 : helm upgrade 사용
+- DAG 반영 : 3노드에 rsync → 최대 {{ .Values.dagRefreshInterval }}초 후 반영
+- [주의] → DAG/코드는 모든 노드에 동일하게 동기화
+- 실행 중 태스크 로그 : kubectl logs
+- 실패 태스크 Pod : 원인 확인 후 직접 삭제
+- helm uninstall 후에도 메타DB / HDFS 로그 / hostPath 코드는 유지
+- airflow-init Job : 필요 시 직접 삭제
+- Variable / Connection (DAG 이 읽는 것 — Secret airflow-env 의 AIRFLOW_VAR_* / AIRFLOW_CONN_*)
+  Variable   : collector_crypto_key · collector_db_query · collector_kafka_config · collector_snapshot_config
+  Connection : collector_db · collector_kafka · data_node_ssh · {{ .Values.logs.connId }}
+  (cdc_seed_loader 의 cdc_mysql/cdc_oracle/cdc_postgres/cdc_mssql 은 이 차트가 만들지 않는다 — UI 에서 등록)

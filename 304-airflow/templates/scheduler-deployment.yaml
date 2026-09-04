@@ -1,0 +1,123 @@
+# ===============================================
+# [Airflow Scheduler]
+#   - DAG 스케줄링 및 KubernetesExecutor 태스크 Pod 생성
+#   - 태스크는 직접 실행하지 않고 Pod Template 기반으로 생성
+# ===============================================
+
+apiVersion: apps/v1
+kind: Deployment
+
+metadata:
+  name: airflow-scheduler
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: airflow-scheduler
+    app.kubernetes.io/name: airflow
+    app.kubernetes.io/component: scheduler
+    app.kubernetes.io/part-of: data-layer
+
+spec:
+  replicas: {{ .Values.scheduler.replicas }}
+
+  # Scheduler 중복 실행 방지
+  strategy:
+    type: Recreate
+
+  selector:
+    matchLabels:
+      app: airflow-scheduler
+
+  template:
+    metadata:
+      annotations:
+        # 설정 변경 시 Pod 재시작
+        checksum/airflow-env: {{ include (print $.Template.BasePath "/secret-airflow-env.yaml") . | sha256sum }}
+        checksum/pod-template: {{ include (print $.Template.BasePath "/configmap-pod-template.yaml") . | sha256sum }}
+
+      labels:
+        app: airflow-scheduler
+        app.kubernetes.io/name: airflow
+        app.kubernetes.io/component: scheduler
+        app.kubernetes.io/part-of: data-layer
+
+    spec:
+      enableServiceLinks: false
+
+      # Scheduler 종료 대기 시간
+      terminationGracePeriodSeconds: 120
+
+      securityContext:
+        runAsUser: {{ .Values.securityContext.runAsUser }}
+        runAsGroup: {{ .Values.securityContext.fsGroup }}
+        fsGroup: {{ .Values.securityContext.fsGroup }}
+
+      containers:
+        - name: scheduler
+          image: {{ .Values.global.harborRegistry }}/data-layer/airflow:{{ .Values.global.imageTag }}
+          imagePullPolicy: IfNotPresent
+
+          args: ["scheduler"]
+
+          # Scheduler Health API
+          ports:
+            - name: health
+              containerPort: 8974
+
+          envFrom:
+            - configMapRef:
+                name: data-layer-env
+            - secretRef:
+                name: data-layer-secrets
+            - secretRef:
+                name: airflow-env
+
+          # Scheduler 상태 확인
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: health
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 6
+
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: health
+            initialDelaySeconds: 60
+            periodSeconds: 20
+            failureThreshold: 6
+
+          # requests 는 당분간 주석 처리 — 노드 여유가 없어(ap CPU 95% · s1 메모리 96% 요청) 그대로는
+          # api-server 가 Pending 이라 스케줄러 검사를 빼고 띄운다(301-hadoop 과 같은 임시 조치).
+          # 대가: QoS 가 BestEffort 라 메모리 압박 시 먼저 evict 된다. 여유가 생기면 주석을 푼다.
+          # resources:
+          #   requests:
+          #     cpu: "100m"
+          #     memory: "256Mi"
+
+          volumeMounts:
+            # KubernetesExecutor 태스크 Pod 템플릿
+            - name: pod-template
+              mountPath: {{ .Values.podTemplateDir | quote }}
+              readOnly: true
+
+            # DAG/코드 디렉토리
+            {{- range .Values.repo.dirs }}
+            - name: repo-{{ . }}
+              mountPath: {{ printf "%s/%s" $.Values.airflowHome . | quote }}
+              readOnly: true
+            {{- end }}
+
+      volumes:
+        - name: pod-template
+          configMap:
+            name: airflow-pod-template
+
+        # 각 노드에 동기화된 DAG/코드 디렉토리
+        {{- range .Values.repo.dirs }}
+        - name: repo-{{ . }}
+          hostPath:
+            path: {{ printf "%s/%s" $.Values.repo.hostPath . | quote }}
+            type: Directory
+        {{- end }}

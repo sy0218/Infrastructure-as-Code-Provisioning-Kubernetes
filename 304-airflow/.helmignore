@@ -1,0 +1,8 @@
+# 차트 패키징/렌더에서 제외할 파일
+.git/
+.gitignore
+*.tgz
+*.swp
+*.bak
+.vscode/
+.idea/
