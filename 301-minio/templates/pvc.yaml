@@ -1,0 +1,27 @@
+# ===============================================
+# [MinIO 데이터 PVC]
+#
+# - MinIO 데이터를 저장하는 RWO PVC
+# - Longhorn이 볼륨을 복제하여 노드 장애 시 데이터 보호
+# - Pod가 다른 노드로 이동해도 동일 PVC를 연결
+#
+# [주의]
+# - helm uninstall 시 PVC도 삭제될 수 있음
+# - Longhorn reclaimPolicy가 Delete이면 볼륨과 데이터도 삭제됨
+# ===============================================
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: minio-data
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: minio
+    app.kubernetes.io/name: minio
+    app.kubernetes.io/part-of: data-layer
+
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: {{ .Values.storage.storageClass }}
+  resources:
+    requests:
+      storage: {{ .Values.storage.size }}

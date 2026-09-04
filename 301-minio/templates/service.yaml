@@ -1,0 +1,27 @@
+# ===============================================
+# [MinIO Service]
+#
+# - ClusterIP → 클러스터 내부에서만 접근
+# - Pod가 다른 노드로 이동해도 Service 주소는 유지
+# ===============================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: minio
+    app.kubernetes.io/name: minio
+    app.kubernetes.io/part-of: data-layer
+
+spec:
+  type: ClusterIP
+
+  # MinIO Pod 연결
+  selector:
+    app: minio
+
+  ports:
+    - name: api
+      port: {{ .Values.ports.api }}
+      targetPort: api

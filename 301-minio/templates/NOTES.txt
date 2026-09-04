@@ -1,0 +1,18 @@
+MinIO 배포 완료 → Release {{ .Release.Name }} / Chart {{ .Chart.Name }}-{{ .Chart.Version }}
+
+[구성]
+- Deployment : minio (단일 인스턴스, Recreate)
+- PVC        : minio-data ({{ .Values.storage.size }}, {{ .Values.storage.storageClass }})
+- Service    : minio ({{ .Values.ports.api }} S3 API)
+
+[접속]
+- 클러스터 내부 전용
+- S3 API: http://minio.{{ .Values.global.namespace }}.svc.cluster.local:{{ .Values.ports.api }}
+
+[확인]
+kubectl -n {{ .Values.global.namespace }} get pod,pvc,svc -l app=minio -o wide
+
+[주의]
+- Node 장애 시 자동 재기동은 Longhorn nodeDownPodDeletionPolicy 설정 필요
+- 기존 파이프라인의 S3 Endpoint는 별도 전환 필요
+- helm uninstall 시 PVC 삭제 → MinIO 데이터도 삭제될 수 있음

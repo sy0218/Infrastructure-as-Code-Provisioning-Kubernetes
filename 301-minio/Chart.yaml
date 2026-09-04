@@ -1,0 +1,22 @@
+# ===================================================
+# [301-minio]
+#
+# MinIO 단일 인스턴스 → 내부 S3 오브젝트 스토리지
+#
+# 설계
+#   - Deployment(Recreate) 1개 + RWO PVC(Longhorn) + ClusterIP
+#   - MinIO는 단일 인스턴스로 운영
+#   - 데이터 복제 및 노드 장애 대응은 Longhorn이 담당
+#   - 노드 장애 시 Pod가 다른 노드로 재기동되고 동일 PVC를 연결
+#
+# 의존성
+#   - 100-base(Longhorn), 300-data-layer-base(공용 Secret) 선행 배포
+#   - Node 장애 시 Pod 자동 삭제/재기동은 Longhorn 정책에 의존
+# ===================================================
+apiVersion: v2
+name: minio
+description: "MinIO 단일 인스턴스 → 내부 S3 (Deployment + Longhorn PVC + ClusterIP)"
+type: application
+
+# Chart 버전 (업그레이드 시 명시적으로 변경)
+version: 0.1.0
