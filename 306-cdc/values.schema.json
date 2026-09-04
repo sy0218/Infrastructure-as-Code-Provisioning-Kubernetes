@@ -1,0 +1,42 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "cdc values",
+  "description": "이 차트가 실제로 참조하는 키만 required 로 선언한다(values.common.yaml 을 -f 로 주지 않으면 렌더 전에 실패).",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["global", "replicas", "groupId", "storageTopics", "replicationFactor", "heapOpts"],
+  "properties": {
+    "global": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["namespace", "harborRegistry", "imageTag", "kafka"],
+      "properties": {
+        "namespace": { "type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", "maxLength": 63 },
+        "harborRegistry": { "type": "string", "pattern": "^[a-z0-9]([-.a-z0-9]*[a-z0-9])?(:[0-9]+)?$" },
+        "imageTag": { "type": "string", "minLength": 1 },
+        "kafka": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": ["connectPort"],
+          "properties": {
+            "connectPort": { "type": "integer", "minimum": 1, "maximum": 65535 }
+          }
+        }
+      }
+    },
+    "replicas": { "type": "integer", "minimum": 1 },
+    "groupId": { "type": "string", "minLength": 1 },
+    "storageTopics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["config", "offset", "status"],
+      "properties": {
+        "config": { "type": "string", "minLength": 1 },
+        "offset": { "type": "string", "minLength": 1 },
+        "status": { "type": "string", "minLength": 1 }
+      }
+    },
+    "replicationFactor": { "type": "integer", "minimum": 1, "description": "브로커 수 이하" },
+    "heapOpts": { "type": "string", "pattern": "^-Xm" }
+  }
+}

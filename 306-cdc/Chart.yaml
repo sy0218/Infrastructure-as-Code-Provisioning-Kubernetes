@@ -1,0 +1,21 @@
+# ===================================================
+# [306-cdc]
+#
+# Kafka Connect(Debezium) → 소스 RDB 의 변경(CDC)을 raw.* 토픽으로 흘린다
+#
+# 설계
+#   - Deployment ×N + ClusterIP (상태 = Kafka 내부 토픽 3종 → 파드에 디스크·고정 ID 없음)
+#   - 워커가 죽으면 커밋된 오프셋부터 다른 워커가 이어받는다 (at-least-once)
+#   - 커넥터 등록은 기동 후 REST (관리 화면 '수집 › CDC 등록') — 차트에 없다
+#
+# 의존성
+#   - 300-data-layer-base(공용 ConfigMap·Secret), 301-kafka(브로커) 선행 배포
+#   - Service 이름 cdc-connect + global.kafka.connectPort = 300 의 KAFKA_CONNECT_URL (계약)
+# ===================================================
+apiVersion: v2
+name: cdc
+description: "Kafka Connect(Debezium) → CDC 워커 (Deployment + ClusterIP)"
+type: application
+
+# Chart 버전 (업그레이드 시 명시적으로 변경)
+version: 0.1.0

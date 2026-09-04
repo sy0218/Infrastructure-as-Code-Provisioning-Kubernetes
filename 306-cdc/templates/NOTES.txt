@@ -1,0 +1,18 @@
+Kafka Connect 배포 완료 → Release {{ .Release.Name }} / Chart {{ .Chart.Name }}-{{ .Chart.Version }}
+
+[구성]
+- Deployment : cdc-connect ({{ .Values.replicas }} 워커, group.id={{ .Values.groupId }})
+- Service    : cdc-connect ({{ .Values.global.kafka.connectPort }} REST)
+- 내부 토픽  : {{ .Values.storageTopics.config }} / {{ .Values.storageTopics.offset }} / {{ .Values.storageTopics.status }} (RF {{ .Values.replicationFactor }})
+
+[REST 주소 = 300 의 KAFKA_CONNECT_URL]
+- http://cdc-connect.{{ .Values.global.namespace }}.svc.cluster.local:{{ .Values.global.kafka.connectPort }}
+
+[확인]
+kubectl -n {{ .Values.global.namespace }} get deploy,pod,svc -l app=cdc-connect
+kubectl -n {{ .Values.global.namespace }} exec deploy/cdc-connect -- curl -s localhost:{{ .Values.global.kafka.connectPort }}/connectors
+
+[주의]
+- 플러그인 스캔 때문에 첫 Ready 까지 수 분 걸린다 (startupProbe 300초)
+- 커넥터 등록은 관리 화면(305-api) 또는 REST — 차트가 하지 않는다
+- 브로커 표(global.kafka.brokers)가 바뀌면 300 upgrade 후 rollout restart deploy/cdc-connect

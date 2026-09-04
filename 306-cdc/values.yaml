@@ -1,0 +1,26 @@
+# ===============================================
+# [306-cdc 전용 설정]
+# → 공통값(global.*)은 values.common.yaml에서 관리
+# → REST 포트는 global.kafka.connectPort (300 의 KAFKA_CONNECT_URL 과 같은 출처)
+# ===============================================
+
+# Connect 워커 수 → 숫자만 바꾸면 그룹 리밸런스가 커넥터/태스크를 재배치한다
+# ⚠ 임시값 — 원래 3. 노드 메모리 여유가 없어 2 로 둔다(워커당 힙 상한 1280m). 여유가 생기면 3.
+replicas: 2
+
+# ⚠ 이 값이 다른 워커는 '다른 클러스터'다 → Service 이름과 같은 값으로 맞춘다
+groupId: "cdc-connect"
+
+# 내부 토픽 3종 → Connect 의 유일한 상태 저장소. 이름을 바꾸면 기존 상태를 못 읽는다
+#   config: 바꾸면 등록된 커넥터가 사라진 것처럼 보인다
+#   offset: 바꾸면 CDC 가 처음부터 다시 스냅샷을 뜬다
+storageTopics:
+  config: "connect-configs"
+  offset: "connect-offsets"
+  status: "connect-status"
+
+# 내부 토픽 복제계수 → 브로커 수(3)보다 크면 토픽 생성 실패로 워커가 기동 중 죽는다
+replicationFactor: 3
+
+# JVM 힙 → 지정하지 않으면 connect-distributed.sh 가 -Xmx2G 를 박는다
+heapOpts: "-Xms512m -Xmx1280m"
