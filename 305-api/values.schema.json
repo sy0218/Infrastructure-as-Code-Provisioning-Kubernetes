@@ -1,0 +1,42 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "api values",
+  "description": "이 차트가 실제로 참조하는 키만 required 로 선언한다(values.common.yaml 을 -f 로 주지 않으면 렌더 전에 실패).",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["global", "replicas", "port", "ingress"],
+  "properties": {
+    "global": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["namespace", "harborRegistry", "imageTag", "ingressClassName", "ingressVip", "hosts"],
+      "properties": {
+        "namespace": { "type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", "maxLength": 63 },
+        "harborRegistry": { "type": "string", "pattern": "^[a-z0-9]([-.a-z0-9]*[a-z0-9])?(:[0-9]+)?$" },
+        "imageTag": { "type": "string", "minLength": 1 },
+        "ingressClassName": { "type": "string", "minLength": 1 },
+        "ingressVip": { "type": "string", "pattern": "^([0-9]{1,3}\\.){3}[0-9]{1,3}$" },
+        "hosts": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": ["api", "grafana"],
+          "properties": {
+            "api": { "type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" },
+            "grafana": { "type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" }
+          }
+        }
+      }
+    },
+    "replicas": { "type": "integer", "const": 1, "description": "/quality/apply 충돌 때문에 1 고정" },
+    "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+    "ingress": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["proxyBodySize", "proxyReadTimeout"],
+      "properties": {
+        "proxyBodySize": { "type": "string", "pattern": "^[0-9]+[kmg]?$" },
+        "proxyReadTimeout": { "type": "string", "pattern": "^[0-9]+$" }
+      }
+    }
+  }
+}

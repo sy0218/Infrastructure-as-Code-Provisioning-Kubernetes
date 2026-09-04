@@ -1,0 +1,92 @@
+# ===============================================
+# [data-layer-api Deployment]
+#
+# - 한 프로세스가 "/"(관리 화면)와 "/api"(REST)를 서빙 → 동일 출처라 CORS 없음
+# - 상태는 파드 밖(DQ 규칙·도메인 설정 = MinIO, collect_job = PostgreSQL) → PVC 없음
+# ===============================================
+apiVersion: apps/v1
+kind: Deployment
+
+metadata:
+  name: data-layer-api
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: data-layer-api
+    app.kubernetes.io/name: data-layer-api
+    app.kubernetes.io/part-of: data-layer
+
+spec:
+  replicas: {{ .Values.replicas }}
+
+  selector:
+    matchLabels:
+      app: data-layer-api
+
+  template:
+    metadata:
+      labels:
+        app: data-layer-api
+        app.kubernetes.io/name: data-layer-api
+        app.kubernetes.io/part-of: data-layer
+
+    spec:
+      # Kubernetes Service 환경변수 자동 주입 비활성화
+      enableServiceLinks: false
+
+      # CoreDNS 는 노드 /etc/hosts 를 보지 않는다 → 파드 안에서 GRAFANA_URL 의 호스트명은 NXDOMAIN.
+      # 대시보드 목록을 이 API 가 대신 읽으므로(브라우저가 직접 부르면 CORS) VIP 1줄을 넣는다.
+      hostAliases:
+        - ip: {{ .Values.global.ingressVip | quote }}
+          hostnames:
+            - {{ .Values.global.hosts.grafana }}
+
+      # serviceAccountName 없음 → default SA (매퍼 재기동 권한은 300 의 ClusterRoleBinding)
+      containers:
+        - name: api
+          image: {{ .Values.global.harborRegistry }}/data-layer/api:{{ .Values.global.imageTag }}
+          imagePullPolicy: IfNotPresent
+
+          ports:
+            - name: http
+              containerPort: {{ .Values.port }}
+
+          # 접속값·자격증명은 전부 300 의 공용 오브젝트에서 온다
+          envFrom:
+            - configMapRef:
+                name: data-layer-env
+            - secretRef:
+                name: data-layer-secrets
+
+          env:
+            - name: DATA_LAYER_API_PORT
+              value: {{ .Values.port | quote }}
+
+            # K8s API 어댑터가 매퍼 파드를 조회/삭제할 네임스페이스 → 자기 자신에게서 읽는다
+            - name: DATA_LAYER_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+
+          # /health 는 무인증 경로 (그 외 /api/* 는 X-API-Key)
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            failureThreshold: 6
+
+          # requests 는 당분간 주석 처리 — 노드 여유가 없다 (304-airflow 와 같은 임시 조치)
+          # 대가: BestEffort QoS → 메모리 압박 시 먼저 evict. 여유가 생기면 주석을 푼다.
+          # resources:
+          #   requests:
+          #     cpu: "100m"
+          #     memory: "256Mi"

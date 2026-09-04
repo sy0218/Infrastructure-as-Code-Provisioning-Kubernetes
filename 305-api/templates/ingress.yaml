@@ -1,0 +1,37 @@
+# ===============================================
+# [data-layer-api Ingress]
+#
+# - "/"(관리 화면)와 "/api"(REST)를 한 프로세스가 서빙 → 규칙 하나
+# ⚠ "/" 는 인증 없는 관리 화면 (REST 만 X-API-Key) → 사설망 전제
+# ===============================================
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+
+metadata:
+  name: data-layer-api
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: data-layer-api
+    app.kubernetes.io/name: data-layer-api
+    app.kubernetes.io/part-of: data-layer
+
+  annotations:
+    # 업로드 상한 (기본 1m → 413) / 응답 대기 (기본 60초 → 504) — 근거는 values.yaml
+    nginx.ingress.kubernetes.io/proxy-body-size: {{ .Values.ingress.proxyBodySize | quote }}
+    nginx.ingress.kubernetes.io/proxy-read-timeout: {{ .Values.ingress.proxyReadTimeout | quote }}
+    nginx.ingress.kubernetes.io/proxy-send-timeout: {{ .Values.ingress.proxyReadTimeout | quote }}
+
+spec:
+  ingressClassName: {{ .Values.global.ingressClassName }}
+
+  rules:
+    - host: {{ .Values.global.hosts.api }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: data-layer-api
+                port:
+                  number: {{ .Values.port }}

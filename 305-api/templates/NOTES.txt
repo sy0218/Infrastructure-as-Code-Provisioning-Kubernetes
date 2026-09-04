@@ -1,0 +1,17 @@
+data-layer-api 배포 완료 → Release {{ .Release.Name }} / Chart {{ .Chart.Name }}-{{ .Chart.Version }}
+
+[구성]
+- Deployment : data-layer-api ({{ .Values.replicas }} — /quality/apply 충돌 때문에 1 고정)
+- Service    : data-layer-api ({{ .Values.port }})
+- Ingress    : http://{{ .Values.global.hosts.api }}  (REST: /api — X-API-Key 필요)
+
+[클러스터 내부 주소]
+- http://data-layer-api.{{ .Values.global.namespace }}.svc.cluster.local:{{ .Values.port }}
+
+[확인]
+kubectl -n {{ .Values.global.namespace }} get deploy,svc,ing -l app=data-layer-api
+curl -s http://{{ .Values.global.hosts.api }}/health
+
+[주의]
+- 파드 hostAliases 의 VIP({{ .Values.global.ingressVip }}) 는 102-ingress · Ansible ingress_vip 와 같아야 한다
+- DQ '적용' 상한 = 드레인(DATA_QUALITY_RESTART_DRAIN_TIMEOUT) + 60초 < proxyReadTimeout({{ .Values.ingress.proxyReadTimeout }})
