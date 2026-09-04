@@ -1,20 +1,27 @@
 # ===============================================
-# [iceberg 카탈로그 DB → Database CR]
+# [Iceberg Catalog DB → Database CR]
 #
-# 구 initdb.d/02_iceberg_catalog_db.sh(CREATE DATABASE 만)의 선언형 승계.
-# DDL 이 없는 것은 의도다 — pyiceberg SqlCatalog 가 최초 접속 시
-# iceberg_tables/iceberg_namespace_properties 를 스스로 만든다.
+# CNPG가 Iceberg Catalog용 빈 DB를 생성한다.
+# 테이블/스키마는 PyIceberg SqlCatalog가 최초 접속 시 자동 생성한다.
 # ===============================================
+
 apiVersion: postgresql.cnpg.io/v1
 kind: Database
+
 metadata:
-  name: {{ .Values.clusterName }}-iceberg-catalog
+  name: {{ .Values.global.postgres.clusterName }}-iceberg-catalog
   namespace: {{ .Values.global.namespace }}
   labels:
     app.kubernetes.io/name: postgres
     app.kubernetes.io/part-of: data-layer
+
 spec:
+  # DB를 생성할 CNPG Cluster
   cluster:
-    name: {{ .Values.clusterName }}
-  name: {{ .Values.databases.icebergCatalog }}
-  owner: {{ .Values.secrets.appUser }}
+    name: {{ .Values.global.postgres.clusterName }}
+
+  # 생성할 Database
+  name: {{ .Values.global.postgres.databases.icebergCatalog }}
+
+  # Database 소유자
+  owner: {{ .Values.global.secrets.postgresUser }}

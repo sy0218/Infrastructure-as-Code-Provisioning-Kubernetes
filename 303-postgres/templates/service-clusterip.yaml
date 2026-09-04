@@ -1,0 +1,39 @@
+# ===============================================
+# [PostgreSQL ClusterIP Service]
+#
+# PostgreSQL Pod의 메트릭을 Prometheus가 수집하기 위한 Service.
+# 클러스터 내부에서만 사용하므로 ClusterIP로 구성한다.
+#
+# Prometheus
+#    ↓
+# postgres-metrics :9187
+#    ↓
+# PostgreSQL Pod 3개
+# ===============================================
+
+apiVersion: v1
+kind: Service
+
+metadata:
+  # 실제 이름: data-layer-postgres-metrics
+  name: {{ .Values.global.postgres.clusterName }}-metrics
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: postgres-metrics
+    app.kubernetes.io/name: postgres-metrics
+    app.kubernetes.io/part-of: data-layer
+
+spec:
+  # 클러스터 내부에서만 접근
+  type: ClusterIP
+
+  selector:
+    # 해당 CNPG Cluster의 PostgreSQL Instance Pod만 선택
+    cnpg.io/cluster: {{ .Values.global.postgres.clusterName }}
+    cnpg.io/podRole: instance
+
+  ports:
+    - name: metrics
+      # CNPG Instance Manager의 메트릭 포트
+      port: 9187
+      targetPort: metrics

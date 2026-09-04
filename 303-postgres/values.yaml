@@ -1,71 +1,35 @@
 # ===============================================
-# [PostgreSQL Values]
-#
-# - 303-postgres Helm Chart의 설정값
-# - PostgreSQL Cluster 이름, 개수, 저장공간,
-#   외부 접속 IP, DB 이름, 계정 등을 여기서 설정한다.
+# [303-postgres 전용 설정]
+# → 공통값(global.*)은 values.common.yaml에서 관리
 # ===============================================
 
-global:
-  # Kubernetes Namespace
-  namespace: "data-layer"
-
-  # PostgreSQL 이미지를 가져올 Harbor 주소
-  harborRegistry: "data-layer-harbor:80"
-
-  # 사용할 PostgreSQL 이미지 태그
-  imageTag: "v0.1.0"
-
-
-# ===============================================
-# [PostgreSQL Cluster]
-#   - CNPG Operator가 이 값을 보고 PostgreSQL Cluster를 생성한다.
-#   - clusterName이 Service, Pod, PVC 등의 이름 기준이 된다.
-# ===============================================
-
-# PostgreSQL Cluster 이름
-clusterName: "data-layer-postgres"
-
-# PostgreSQL 인스턴스 2개 → Primary 1개 + Replica1개
+# PostgreSQL 인스턴스 2개 → Primary 1개 + Replica 1개
 instances: 2
 
+# 인스턴스를 배치할 노드 이름 (nodeAffinity 로 지정)
+nodeNames: ["s1", "s2"]
+
+
+# ===============================================
+# [operand 이미지 태그]
+#   - 공용 global.imageTag 를 쓰지 않는 유일한 값이다.
+#   - CNPG 웹훅이 태그에서 PG 메이저를 읽어 업그레이드를 판단하므로 태그가 PG 버전으로
+#     시작해야 한다. v0.1.0 은 "invalid version tag" 로 거부되고 latest 도 금지다.
+#   - 앞자리는 이미지의 실제 PG 버전(data_layer_postgres/Dockerfile 의 FROM), 뒷자리는
+#     저장소 태그 규칙 — build_and_push.sh 에 준 태그와 글자 그대로 같아야 한다.
+# ===============================================
+imageTag: "16.15-v0.1.1"
 
 # ===============================================
 # [Storage]
 #   - 각 PostgreSQL 인스턴스가 사용할 저장공간
-#   - CNPG가 DB 복제를 관리하므로 local-path를 사용한다.
+#   - local-path 인 이유: 복제를 CNPG 가 앱 레벨(스트리밍 리플리케이션)에서 하므로
 # ===============================================
-
 storage:
-  # local-path 인 이유: 복제를 CNPG 가 앱 레벨(스트리밍 리플리케이션)에서 하므로
-  storageClass: "local-path"
-  size: "40Gi"
+  storageClass: "local-path" # 사용할 StorageClass
+  size: "40Gi"               # 인스턴스당 저장공간
 
-# 외부 접속용 MetalLB VIP → DBeaver 등 클러스터 밖 도구가 <이 IP>:5432 로 붙는다.
-# [주의] 102-ingress terraform.tfvars 의 postgres_vip 와 같은 값
+
+# 외부 접속용 MetalLB VIP
+# → <VIP>:5432로 PostgreSQL 접속
 externalIp: "192.168.56.241"
-
-
-
-# ===============================================
-# [Database]
-#   - PostgreSQL Cluster 안에 생성할 데이터베이스
-# ===============================================
-databases:
-  collector: "data_layer"           # 앱 DB → collect_job/realtime_source/lineage
-  airflow: "airflow"                # Airflow 메타스토어 (스키마는 airflow db migrate 가 만든다)
-  icebergCatalog: "iceberg_catalog" # pyiceberg SqlCatalog (테이블은 pyiceberg 가 만든다)
-
-# collector DB에서 사용할 스키마 이름
-collectorDbSchema: "data_pipeline"
-
-
-# ===============================================
-# [Application 계정]
-#   - 애플리케이션이 PostgreSQL에 접속할 때 사용하는 계정
-#   - 3개 DB에서 사용한다.
-#   - 개발/로컬 환경용 설정이며 운영에서는 Secret 관리 도구를 사용한다.
-# ===============================================
-secrets:
-  appUser: "data_layer"
-  appPassword: "data_layer123!"

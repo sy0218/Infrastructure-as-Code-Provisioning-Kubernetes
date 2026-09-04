@@ -1,31 +1,45 @@
-postgres 배포 완료
-Release: {{ .Release.Name }}
-Chart  : {{ .Chart.Name }}-{{ .Chart.Version }}
+PostgreSQL 배포 완료 — Release {{ .Release.Name }} / Chart {{ .Chart.Name }}-{{ .Chart.Version }}
 
-생성된 리소스
-- Cluster  : {{ .Values.clusterName }} (인스턴스 {{ .Values.instances }} — primary 1 + replica {{ sub .Values.instances 1 }})
-- Database : {{ .Values.databases.airflow }} / {{ .Values.databases.icebergCatalog }} (앱 DB {{ .Values.databases.collector }} 는 Cluster bootstrap 이 만든다)
-- Secret   : {{ .Values.clusterName }}-app-user (앱 계정 {{ .Values.secrets.appUser }})
-- Service  : {{ .Values.clusterName }}-metrics (302 스크랩용) / {{ .Values.clusterName }}-external (VIP {{ .Values.externalIp }}:5432)
-- 오퍼레이터가 만드는 것: Service -rw(쓰기=primary)/-ro(replica)/-r(전체), 파드 -1..-{{ .Values.instances }}, PVC, 인스턴스용 SA/Role/RoleBinding
+[배포 구성]
+- Cluster  {{ .Values.global.postgres.clusterName }}
+           인스턴스 {{ .Values.instances }}개 · {{ .Values.storage.size }} / {{ .Values.storage.storageClass }}
+- Database {{ .Values.global.postgres.databases.airflow }}
+           {{ .Values.global.postgres.databases.icebergCatalog }}
+           {{ .Values.global.postgres.databases.collector }}는 Cluster bootstrap에서 생성
+- Service  {{ .Values.global.postgres.clusterName }}-metrics :9187
+           → Prometheus 메트릭 수집
+- Service  {{ .Values.global.postgres.clusterName }}-external :{{ .Values.global.postgres.port }}
+           → MetalLB VIP {{ .Values.externalIp }}로 외부 접속
 
-확인 방법
-kubectl -n {{ .Values.global.namespace }} get cluster {{ .Values.clusterName }}     # STATUS: Cluster in healthy state
-kubectl -n {{ .Values.global.namespace }} get pods -l cnpg.io/cluster={{ .Values.clusterName }} -o wide
-kubectl -n {{ .Values.global.namespace }} get svc | grep {{ .Values.clusterName }}
-kubectl -n {{ .Values.global.namespace }} get database                              # reconciled True 확인
+[CNPG Operator 관리]
+- -rw  → Primary 접속
+- -ro  → Replica 접속
+- -r   → 전체 인스턴스 접속
+- PostgreSQL Pod / PVC / Service는 CNPG Operator가 생성·관리한다.
 
-주의사항
-- 103-cnpg(CRD/오퍼레이터)와 300-data-layer-base(네임스페이스)가 먼저 설치돼 있어야 한다.
-  → CRD 가 없으면 install 이 "no matches for kind Cluster" 로 죽는다
-    (helm template 은 CRD 검증을 안 해 통과한다 — 안심 금물).
+[배치]
+- 지정된 nodeNames에서만 PostgreSQL 인스턴스를 실행한다.
+- podAntiAffinity를 적용하여 한 Node에 여러 인스턴스가 배치되지 않도록 한다.
+- 따라서 nodeNames 수와 instances 수가 같아야 한다.
+- Node 장애 시 남은 후보가 없으면 새 인스턴스가 Pending 상태가 될 수 있다.
+- Primary 위치는 고정하지 않으며 Failover/Switchover에 따라 변경된다.
 
-- helm uninstall = Cluster CR 삭제 = 오퍼레이터가 파드·PVC 까지 지운다(데이터 소실).
-  Database CR 삭제는 반대로 DB 를 지우지 않는다(retain).
+[접속]
+- 클러스터 내부
+  {{ .Values.global.postgres.clusterName }}-rw.{{ .Values.global.namespace }}.svc.cluster.local:{{ .Values.global.postgres.port }}
 
-- 계정값(secrets.*)은 300-data-layer-base 의 postgresUser/postgresPassword 와,
-  DB 이름(databases.*)은 300 의 collectorDbName·icebergCatalogDbName 과
-  같은 커밋에서만 함께 바꾼다.
+- 클러스터 외부
+  {{ .Values.externalIp }}:{{ .Values.global.postgres.port }}
 
-- 클러스터 안 소비자 주소는 {{ .Values.clusterName }}-rw.{{ .Values.global.namespace }}.svc.cluster.local:5432,
-  클러스터 밖(DBeaver 등)은 {{ .Values.externalIp }}:5432 다.
+[확인]
+kubectl -n {{ .Values.global.namespace }} get cluster {{ .Values.global.postgres.clusterName }}
+kubectl -n {{ .Values.global.namespace }} get pods -l cnpg.io/cluster={{ .Values.global.postgres.clusterName }} -o wide
+kubectl -n {{ .Values.global.namespace }} get svc,pvc | grep {{ .Values.global.postgres.clusterName }}
+
+[주의]
+- 설치 순서:
+  103-cnpg → 300-data-layer-base → PostgreSQL Chart
+- CRD / Operator가 없으면 Cluster 생성에 실패한다.
+- 앱 계정 Secret이 없으면 bootstrap이 실패한다.
+- helm uninstall 시 Cluster와 PostgreSQL 데이터가 함께 삭제될 수 있으므로 주의한다.
+- instances를 늘리면 nodeNames도 함께 확보해야 한다.

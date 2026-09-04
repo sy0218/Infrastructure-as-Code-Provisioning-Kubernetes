@@ -1,17 +1,16 @@
 # ===================================================
 # [303-postgres]
-#   - Helm Chart 스택
-#   - 플랫폼 메타 DB → CloudNativePG Cluster 1개 (인스턴스 2: primary 1 + replica 1)
-#     → airflow 메타 / collector(data_layer) / iceberg 카탈로그 DB 를 담는다
+# → 플랫폼 공용 PostgreSQL 배포
+# → CNPG Cluster 1개 (Primary 1 + Replica 1)
+# → Airflow / Collector / Iceberg 등의 DB 사용
 #
-#   - CRD(Cluster/Database)와 오퍼레이터는 103-cnpg 가 설치한다
-#     → 103 apply 후에 install 할 것.
-#   - 네임스페이스는 300-data-layer-base 소유 → 300 다음.
-#   - ArgoCD 적용 시 Sync Wave 1 → 300 다음, 304 이전 배포.
+# [배포 순서]
+# 103-cnpg → 300-data-layer-base → 303-postgres → 304-...
 # ===================================================
 apiVersion: v2
 name: postgres
-description: "플랫폼 PostgreSQL → CNPG Cluster data-layer-postgres(2 인스턴스) / 앱 사용자 Secret / Database CR / 메트릭·외부 Service"
+description: "플랫폼 PostgreSQL → CNPG Cluster data-layer-postgres(2 인스턴스) / 앱 사용자 Secret / Database CR / 메트릭 - 외부 Service"
 type: application
-# 원본 규칙 승계: 버전은 정확 고정, 업그레이드는 숫자를 고치는 커밋으로만.
+
+# Chart 버전 (업그레이드 시 명시적으로 변경)
 version: 0.1.0
