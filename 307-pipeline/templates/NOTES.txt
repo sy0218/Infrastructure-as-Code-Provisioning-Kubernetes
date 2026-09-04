@@ -1,0 +1,21 @@
+CDM 파이프라인 배포 완료 → Release {{ .Release.Name }} / Chart {{ .Chart.Name }}-{{ .Chart.Version }}
+
+[구성]
+- cdm-mapper-<모듈>      Deployment ×{{ len .Values.mapper.modules }} (replicas {{ .Values.mapper.replicas }})
+- cdm-consumer-<종류>    Deployment ×{{ len .Values.consumer.kinds }} (rdb / graph / warehouse)
+- cdm-lineage-consumer   Deployment ×1
+- tcp-socket-collector   Deployment ×1 (hostNetwork, nodeSelector {{ .Values.tcpSocket.nodeSelector | toJson }})
+
+[전제 — 수집 노드 라벨 (차트가 붙이지 않는다)]
+kubectl label node <장비가 보내는 노드> {{ range $k, $v := .Values.tcpSocket.nodeSelector }}{{ $k }}={{ $v }}{{ end }}
+→ 없으면 tcp-socket-collector 만 Pending
+
+[확인]
+kubectl -n {{ .Values.global.namespace }} get deploy -l app.kubernetes.io/part-of=data-layer | grep -E 'cdm-|tcp-socket'
+kubectl -n {{ .Values.global.namespace }} get pod -l app=cdm-mapper -L cdm.mapper/module
+kubectl -n {{ .Values.global.namespace }} get pod -l app=tcp-socket-collector -o wide
+
+[주의]
+- probe 없음 → 이상 감지는 kafka-exporter 의 컨슈머 그룹 lag(Grafana)
+- DQ 적용이 안 먹으면: get pod -l app=cdm-mapper,cdm.mapper/module=<모듈> 이 0건인지 (라벨/모듈명 불일치)
+- mapper.terminationGracePeriodSeconds({{ .Values.mapper.terminationGracePeriodSeconds }}) > 300 의 DATA_QUALITY_RESTART_DRAIN_TIMEOUT

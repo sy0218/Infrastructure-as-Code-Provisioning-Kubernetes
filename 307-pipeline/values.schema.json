@@ -1,0 +1,72 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "pipeline values",
+  "description": "이 차트가 실제로 참조하는 키만 required 로 선언한다(values.common.yaml 을 -f 로 주지 않으면 렌더 전에 실패).",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["global", "mapper", "consumer", "lineage", "tcpSocket"],
+  "properties": {
+    "global": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["namespace", "harborRegistry", "imageTag"],
+      "properties": {
+        "namespace": { "type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", "maxLength": 63 },
+        "harborRegistry": { "type": "string", "pattern": "^[a-z0-9]([-.a-z0-9]*[a-z0-9])?(:[0-9]+)?$" },
+        "imageTag": { "type": "string", "minLength": 1 }
+      }
+    },
+    "mapper": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["replicas", "terminationGracePeriodSeconds", "modules"],
+      "properties": {
+        "replicas": { "type": "integer", "minimum": 0 },
+        "terminationGracePeriodSeconds": { "type": "integer", "minimum": 0 },
+        "modules": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$", "description": "파이썬 모듈명 (스네이크)" }
+        }
+      }
+    },
+    "consumer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["replicas", "terminationGracePeriodSeconds", "kinds"],
+      "properties": {
+        "replicas": { "type": "integer", "minimum": 0 },
+        "terminationGracePeriodSeconds": { "type": "integer", "minimum": 0 },
+        "kinds": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["image"],
+            "properties": {
+              "image": { "type": "string", "minLength": 1 },
+              "fromConfigMap": { "type": "object", "additionalProperties": { "type": "string" } },
+              "fromSecret": { "type": "object", "additionalProperties": { "type": "string" } }
+            }
+          }
+        }
+      }
+    },
+    "lineage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["replicas"],
+      "properties": { "replicas": { "type": "integer", "minimum": 0 } }
+    },
+    "tcpSocket": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["nodeSelector"],
+      "properties": {
+        "nodeSelector": { "type": "object", "minProperties": 1, "additionalProperties": { "type": "string" } }
+      }
+    }
+  }
+}

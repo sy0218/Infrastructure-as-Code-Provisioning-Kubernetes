@@ -1,0 +1,23 @@
+# ===================================================
+# [307-pipeline]
+#
+# CDM 파이프라인 워커 → 매퍼 8종 · 컨슈머 3종 · 계보 컨슈머 · TCP 수집기
+#   raw.* ─(cdm-mapper)→ cdm-topic ─(cdm-consumer-rdb/graph/warehouse)→ PG / Neo4j / Iceberg
+#   lineage-topic ─(cdm-lineage-consumer)→ PG    장비 push ─(tcp-socket-collector)→ raw.*
+#
+# 설계
+#   - 전부 PVC 없는 Deployment. 리슨 포트가 없어 probe 없음 (이상 감지 = 컨슈머 그룹 lag)
+#   - 매퍼는 이미지 하나 + 모듈별 command → values 의 modules 목록으로 찍는다
+#   - tcp-socket-collector 만 hostNetwork + nodeSelector (리슨 포트가 런타임 DB 값이라 Service 불가)
+#
+# 의존성
+#   - 300-data-layer-base(공용 ConfigMap·Secret), 301-kafka, 301-minio, 303-postgres 선행 배포
+#   - ingest 노드 라벨은 수동: kubectl label node <노드> ingest=true
+# ===================================================
+apiVersion: v2
+name: pipeline
+description: "CDM 파이프라인 워커 → 매퍼 8종 · 컨슈머 3종 · 계보 · TCP 수집기 (Deployment)"
+type: application
+
+# Chart 버전 (업그레이드 시 명시적으로 변경)
+version: 0.1.0

@@ -1,0 +1,81 @@
+# ===============================================
+# [CDM Consumer Deployment ×3]  rdb / graph / warehouse
+#
+# - 셋 다 cdm-topic 을 각자의 컨슈머 그룹으로 읽는다 → 하나가 죽어도 나머지 적재는 계속
+# - 이름 = 라벨 app = 컨슈머 그룹 이름 (cdm-consumer-<종류>)
+# - 종류별 차이는 이미지 + env 번역표뿐 (values consumer.kinds)
+# - probe 없음: 리슨 포트가 없고 섣부른 liveness 는 배치 커밋 중인 워커를 죽인다
+# ===============================================
+{{- range $kind, $c := .Values.consumer.kinds }}
+---
+apiVersion: apps/v1
+kind: Deployment
+
+metadata:
+  name: cdm-consumer-{{ $kind }}
+  namespace: {{ $.Values.global.namespace }}
+  labels:
+    app: cdm-consumer-{{ $kind }}
+    app.kubernetes.io/name: cdm-consumer-{{ $kind }}
+    app.kubernetes.io/component: cdm-consumer
+    app.kubernetes.io/part-of: data-layer
+
+spec:
+  replicas: {{ $.Values.consumer.replicas }}
+
+  selector:
+    matchLabels:
+      app: cdm-consumer-{{ $kind }}
+
+  template:
+    metadata:
+      labels:
+        app: cdm-consumer-{{ $kind }}
+        app.kubernetes.io/name: cdm-consumer-{{ $kind }}
+        app.kubernetes.io/component: cdm-consumer
+        app.kubernetes.io/part-of: data-layer
+
+    spec:
+      # Kubernetes Service 환경변수 자동 주입 비활성화
+      enableServiceLinks: false
+
+      # 마이크로배치 커밋까지 마치고 나가는 시간
+      terminationGracePeriodSeconds: {{ $.Values.consumer.terminationGracePeriodSeconds }}
+
+      containers:
+        - name: cdm-consumer-{{ $kind }}
+          image: {{ $.Values.global.harborRegistry }}/data-layer/{{ $c.image }}:{{ $.Values.global.imageTag }}
+          imagePullPolicy: IfNotPresent
+
+          # 공유 값과 종류별 노브(CDM_CONSUMER_<종류>_*)가 전부 공용 ConfigMap 에 같은 이름으로 있다
+          envFrom:
+            - configMapRef:
+                name: data-layer-env
+            - secretRef:
+                name: data-layer-secrets
+
+          {{- if or $c.fromConfigMap $c.fromSecret }}
+          # 이름이 어긋나는 값만 참조(valueFrom)로 옮겨 담는다 → 자격증명이 스펙에 남지 않는다
+          env:
+            {{- range $name, $key := $c.fromConfigMap }}
+            - name: {{ $name }}
+              valueFrom:
+                configMapKeyRef:
+                  name: data-layer-env
+                  key: {{ $key }}
+            {{- end }}
+            {{- range $name, $key := $c.fromSecret }}
+            - name: {{ $name }}
+              valueFrom:
+                secretKeyRef:
+                  name: data-layer-secrets
+                  key: {{ $key }}
+            {{- end }}
+          {{- end }}
+
+          # requests 는 당분간 주석 처리 — 노드 여유가 없다 (304-airflow 와 같은 임시 조치)
+          # resources:
+          #   requests:
+          #     cpu: "100m"
+          #     memory: "256Mi"
+{{- end }}

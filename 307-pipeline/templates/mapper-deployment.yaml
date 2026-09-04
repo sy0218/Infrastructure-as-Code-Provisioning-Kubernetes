@@ -1,0 +1,73 @@
+# ===============================================
+# [CDM Mapper Deployment ×N]
+#
+# - 이미지 하나에 매퍼 8종 → 실행 모듈만 command 로 갈린다
+# - 변환 규칙은 MinIO 의 config/*.yaml 에서 읽는다
+# - probe 없음: 리슨 포트가 없고 섣부른 liveness 는 드레인 중인 매퍼를 죽인다
+# ===============================================
+{{- range .Values.mapper.modules }}
+---
+apiVersion: apps/v1
+kind: Deployment
+
+metadata:
+  # 모듈명(스네이크) → 오브젝트 이름(케밥)
+  name: cdm-mapper-{{ . | replace "_" "-" }}
+  namespace: {{ $.Values.global.namespace }}
+  labels:
+    app: cdm-mapper
+    cdm.mapper/module: {{ . }}
+    app.kubernetes.io/name: cdm-mapper
+    app.kubernetes.io/part-of: data-layer
+
+spec:
+  replicas: {{ $.Values.mapper.replicas }}
+
+  selector:
+    matchLabels:
+      app: cdm-mapper
+      cdm.mapper/module: {{ . }}
+
+  template:
+    metadata:
+      labels:
+        # ⚠ app + cdm.mapper/module 은 305-api 와의 계약 → DQ 적용이 이 둘로 재기동 대상을 고른다
+        app: cdm-mapper
+        cdm.mapper/module: {{ . }}
+        app.kubernetes.io/name: cdm-mapper
+        app.kubernetes.io/part-of: data-layer
+
+    spec:
+      # Kubernetes Service 환경변수 자동 주입 비활성화
+      enableServiceLinks: false
+
+      # DQ 적용 = 파드 delete → 배치 드레인 시간 (300 의 DRAIN_TIMEOUT 과 커플링)
+      terminationGracePeriodSeconds: {{ $.Values.mapper.terminationGracePeriodSeconds }}
+
+      containers:
+        - name: cdm-mapper
+          image: {{ $.Values.global.harborRegistry }}/data-layer/cdm-mapper:{{ $.Values.global.imageTag }}
+          imagePullPolicy: IfNotPresent
+
+          command: ["python", "-m", "cdm.data_layer_mappers.{{ . }}"]
+
+          envFrom:
+            - configMapRef:
+                name: data-layer-env
+            - secretRef:
+                name: data-layer-secrets
+
+          env:
+            # 공용 LOG_LEVEL 을 한 워크로드가 독점할 수 없어 매퍼 전용 키에서 옮겨 담는다
+            - name: LOG_LEVEL
+              valueFrom:
+                configMapKeyRef:
+                  name: data-layer-env
+                  key: CDM_MAPPER_LOG_LEVEL
+
+          # requests 는 당분간 주석 처리 — 노드 여유가 없다 (304-airflow 와 같은 임시 조치)
+          # resources:
+          #   requests:
+          #     cpu: "100m"
+          #     memory: "256Mi"
+{{- end }}
