@@ -1,0 +1,22 @@
+# ===================================================
+# [400-test-rdb]
+#
+# CDC 소스 RDB 4종 → cdc-oracle · cdc-mssql · cdc-postgres · cdc-mysql
+#
+# 설계
+#   - StatefulSet(1) + ClusterIP + 초기화 ConfigMap, 넷이 공유하는 Secret 하나
+#   - 파이프라인(300번대)의 입력을 흉내 내는 테스트 픽스처 → 공용 ConfigMap/Secret 을 쓰지 않는다
+#   - 스키마·계정·CDC 활성화 = 커넥터의 전제조건 → 초기화 스크립트(files/)가 이 차트의 본체
+#   - 데이터는 cdc_seed_loader DAG 가 매일 다시 채운다 → local-path (Longhorn 복제 불필요)
+#
+# 의존성
+#   - 300-data-layer-base(네임스페이스만), 100-base(local-path) 선행 배포
+#   - 소비자: 306-cdc 커넥터 JSON · 304-airflow 커넥션(cdc_*) 이 Service FQDN 을 가리킨다
+# ===================================================
+apiVersion: v2
+name: test-rdb
+description: "CDC 소스 RDB 4종 → oracle · mssql · postgres · mysql (StatefulSet + ClusterIP + 초기화 스크립트)"
+type: application
+
+# Chart 버전 (업그레이드 시 명시적으로 변경)
+version: 0.1.0

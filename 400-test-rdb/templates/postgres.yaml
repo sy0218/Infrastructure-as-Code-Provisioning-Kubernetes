@@ -1,0 +1,165 @@
+# ===============================================
+# [cdc-postgres — CDC 소스 (논리복제 / pgoutput)]
+#
+# - ConfigMap(initdb) + StatefulSet(1) + ClusterIP
+# - 전제조건: wal_level=logical(args) · publication(initdb) · REPLICATION 권한(이미지가 슈퍼유저로 생성)
+# - STS 인 이유: RWO 볼륨을 두 파드가 동시에 잡는 창이 없다 ('종료 후 생성')
+# ===============================================
+apiVersion: v1
+kind: ConfigMap
+
+metadata:
+  name: cdc-postgres-initdb
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app.kubernetes.io/name: cdc-postgres
+    app.kubernetes.io/component: test-rdb
+    app.kubernetes.io/part-of: data-layer
+
+# ⚠ 볼륨이 빈 첫 기동에만 실행 → 고쳐도 롤아웃으로 반영되지 않는다 (PVC data-cdc-postgres-0 삭제 후 재생성)
+data:
+  01_cdc_test_qm_event.sql: |
+{{ tpl (.Files.Get "files/postgres-initdb.sql") . | indent 4 }}
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+
+metadata:
+  name: cdc-postgres
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: cdc-postgres
+    app.kubernetes.io/name: cdc-postgres
+    app.kubernetes.io/component: test-rdb
+    app.kubernetes.io/part-of: data-layer
+
+spec:
+  serviceName: cdc-postgres
+  replicas: 1
+
+  selector:
+    matchLabels:
+      app: cdc-postgres
+
+  template:
+    metadata:
+      labels:
+        app: cdc-postgres
+        app.kubernetes.io/name: cdc-postgres
+        app.kubernetes.io/component: test-rdb
+        app.kubernetes.io/part-of: data-layer
+
+    spec:
+      # Kubernetes Service 환경변수 자동 주입 비활성화
+      enableServiceLinks: false
+
+      # 체크포인트를 끝낼 시간 (부족하면 다음 기동이 crash recovery)
+      terminationGracePeriodSeconds: 60
+
+      containers:
+        - name: postgres
+          image: {{ .Values.global.harborRegistry }}/data-layer/test-rdb-postgres:{{ .Values.global.imageTag }}
+          imagePullPolicy: IfNotPresent
+
+          # 전부 논리복제 전제조건. wal_sender_timeout=0 이 없으면 저활동 구간에서 복제 연결이 끊긴다
+          args:
+            - -c
+            - wal_level=logical
+            - -c
+            - max_wal_senders=10
+            - -c
+            - max_replication_slots=10
+            - -c
+            - wal_sender_timeout=0
+
+          ports:
+            - name: postgres
+              containerPort: {{ .Values.postgres.port }}
+
+          # 공용 ConfigMap/Secret 을 받지 않는다 → 테스트 픽스처에 파이프라인 자격증명을 넣을 이유가 없다
+          env:
+            - name: POSTGRES_DB
+              value: {{ .Values.postgres.database | quote }}
+            - name: POSTGRES_USER
+              value: {{ .Values.postgres.user | quote }}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: test-rdb-secrets
+                  key: POSTGRES_PASSWORD
+            # 볼륨 루트를 PGDATA 로 쓰지 않는다 (블록 스토리지의 lost+found 때문에 initdb 가 거부)
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: initdb
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+
+          # pg_isready → "이 DB 가 접속을 받는다" 까지 본다 (initdb 중엔 실패)
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "{{ .Values.postgres.user }}", "-d", "{{ .Values.postgres.database }}", "-h", "127.0.0.1"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "{{ .Values.postgres.user }}", "-d", "{{ .Values.postgres.database }}", "-h", "127.0.0.1"]
+            initialDelaySeconds: 60
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 6
+
+          # requests 는 당분간 주석 처리 — 노드 여유가 없다 (304-airflow 와 같은 임시 조치)
+          # resources:
+          #   requests:
+          #     cpu: "100m"
+          #     memory: "256Mi"
+
+      volumes:
+        - name: initdb
+          configMap:
+            name: cdc-postgres-initdb
+
+  # ⚠ helm uninstall 은 이 PVC 를 남긴다 → 스키마를 갈아엎으려면 손으로 지운다
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          app.kubernetes.io/part-of: data-layer
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: {{ .Values.storageClass }}
+        resources:
+          requests:
+            storage: {{ .Values.postgres.storageSize }}
+
+---
+# 이름이 계약 → 커넥터 database.hostname · Airflow 커넥션 cdc_postgres 가 이 FQDN 을 가리킨다
+# 사람이 붙을 땐 옛 포트 재현: kubectl -n data-layer port-forward svc/cdc-postgres 15432:5432
+apiVersion: v1
+kind: Service
+
+metadata:
+  name: cdc-postgres
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: cdc-postgres
+    app.kubernetes.io/name: cdc-postgres
+    app.kubernetes.io/component: test-rdb
+    app.kubernetes.io/part-of: data-layer
+
+spec:
+  type: ClusterIP
+  selector:
+    app: cdc-postgres
+  ports:
+    - name: postgres
+      port: {{ .Values.postgres.port }}
+      targetPort: postgres

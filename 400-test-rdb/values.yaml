@@ -1,0 +1,77 @@
+# ===============================================
+# [400-test-rdb 전용 설정]
+# → 공통값(global.*)은 values.common.yaml에서 관리 (namespace · harborRegistry · imageTag 만 쓴다)
+# → 커넥터 JSON(data_layer_debezium/connect_json) 의 hostname/user/dbname 이 여기 값과 계약이다
+# ===============================================
+
+# 넷 다 테스트 픽스처 → cdc_seed_loader DAG 가 매일 01시 다시 채운다 → local-path
+# ⚠ longhorn 으로 바꾸면 새 볼륨이 root 0755 로 온다 → STS 의 fsGroup 이 그때 의미를 갖는다
+storageClass: "local-path"
+
+# 넷이 비밀번호 하나를 공유한다 (의도) → 커넥터 JSON 4종의 ${CDC_SOURCE_DB_PASSWORD} 자리에 사람이 채우는 값
+# ⚠ data_pipeline/.env 의 CDC_SOURCE_DB_PASSWORD 와 같아야 한다
+secrets:
+  cdcSourceDbPassword: "Dsai12345"
+
+
+# ===============================================
+# [Oracle — LogMiner]
+#   커넥터는 CDB 루트(FREE)로 붙어 PDB(FREEPDB1)로 전환 → 계정은 c## 공통유저
+#   실제 스키마는 대문자 CDC (커넥터 table.include.list = CDC.CDC_TEST_QM_CONTROL_LOOP)
+# ===============================================
+oracle:
+  port: 1521
+  cdbName: "FREE"          # 커넥터 database.dbname
+  pdbName: "FREEPDB1"      # 커넥터 database.pdb.name
+  appUser: "cdc"           # 업무 스키마 겸 계정 (이미지 APP_USER)
+  dbzUser: "c##dbzuser"    # 커넥터 database.user — c## 접두 필수
+
+  # Free 에디션은 SGA+PGA 합계 2GB 제한. 파드가 메모리로 못 뜨면 가장 먼저 낮출 값 (1024M/256M 까지 확인)
+  sgaTarget: "1536M"
+  pgaAggregateTarget: "512M"
+
+  # 이미지의 ORACLE_BASE/oradata — STS 마운트 경로와 한 쌍
+  oradataPath: "/opt/oracle/oradata"
+
+  storageSize: "20Gi"      # 실사용 6.1G (oradata + FRA 아카이브)
+
+
+# ===============================================
+# [SQL Server — 네이티브 CDC]
+#   SQL Agent 잡이 변경분을 cdc.* 테이블에 적재 → Debezium 이 폴링
+#   이미지에 초기화 훅이 없다 → 별도 Job (helm hook)
+# ===============================================
+mssql:
+  port: 1433
+  database: "cdc"          # 커넥터 database.names
+  edition: "Developer"     # MSSQL_PID — 무료 + 기능 제한 없음
+
+  # 상한이 없으면 노드 메모리 전체를 버퍼풀 후보로 잡는다
+  memoryLimitMb: 1024
+
+  storageSize: "8Gi"       # 실사용 190M
+
+
+# ===============================================
+# [PostgreSQL — 논리복제 / pgoutput]
+#   ⚠ 복제 슬롯은 커넥터를 지워도 남아 WAL 을 붙잡는다 → pg_drop_replication_slot 까지 할 것
+# ===============================================
+postgres:
+  port: 5432
+  database: "cdc"          # 커넥터 database.dbname
+  user: "cdc"              # 이미지가 슈퍼유저로 만든다 → REPLICATION 권한 자동
+  publication: "cdc_test_pub"   # 커넥터 publication.name (autocreate 꺼짐 → initdb 가 만든다)
+  storageSize: "4Gi"       # 실사용 47M
+
+
+# ===============================================
+# [MySQL — binlog]
+#   ⚠ serverId 는 커넥터 database.server.id(5001) 와 겹치면 안 된다
+# ===============================================
+mysql:
+  port: 3306
+  database: "cdc"          # 커넥터 database.include.list
+  user: "cdc"              # 복제 권한은 initdb 가 따로 준다
+  serverId: 1
+  binlogExpireSeconds: 604800   # 커넥터가 이보다 오래 멈추면 위치를 잃는다
+  storageSize: "4Gi"       # 실사용 199M

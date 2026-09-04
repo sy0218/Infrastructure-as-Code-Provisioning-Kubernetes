@@ -1,0 +1,30 @@
+CDC 소스 RDB 4종 배포 완료 → Release {{ .Release.Name }} / Chart {{ .Chart.Name }}-{{ .Chart.Version }}
+
+[구성]  StatefulSet(1) + ClusterIP + 초기화 ConfigMap, Secret test-rdb-secrets (storageClass {{ .Values.storageClass }})
+- cdc-oracle    {{ .Values.oracle.port }}   PDB {{ .Values.oracle.pdbName }} / 스키마 {{ .Values.oracle.appUser | upper }} / 커넥터 계정 {{ .Values.oracle.dbzUser }}   ({{ .Values.oracle.storageSize }})
+- cdc-mssql     {{ .Values.mssql.port }}   DB {{ .Values.mssql.database }} / 계정 sa   ({{ .Values.mssql.storageSize }}) + Job cdc-mssql-init (helm hook)
+- cdc-postgres  {{ .Values.postgres.port }}   DB {{ .Values.postgres.database }} / 계정 {{ .Values.postgres.user }} / publication {{ .Values.postgres.publication }}   ({{ .Values.postgres.storageSize }})
+- cdc-mysql     {{ .Values.mysql.port }}   DB {{ .Values.mysql.database }} / 계정 {{ .Values.mysql.user }}   ({{ .Values.mysql.storageSize }})
+
+[커넥터 JSON · Airflow 커넥션(cdc_*) 이 가리키는 주소]
+- cdc-oracle.{{ .Values.global.namespace }}.svc.cluster.local:{{ .Values.oracle.port }}
+- cdc-mssql.{{ .Values.global.namespace }}.svc.cluster.local:{{ .Values.mssql.port }}
+- cdc-postgres.{{ .Values.global.namespace }}.svc.cluster.local:{{ .Values.postgres.port }}
+- cdc-mysql.{{ .Values.global.namespace }}.svc.cluster.local:{{ .Values.mysql.port }}
+  비밀번호 = values secrets.cdcSourceDbPassword (커넥터 JSON 의 ${CDC_SOURCE_DB_PASSWORD})
+
+[확인]
+kubectl -n {{ .Values.global.namespace }} get sts,pod,pvc,svc -l app.kubernetes.io/component=test-rdb
+kubectl -n {{ .Values.global.namespace }} logs job/cdc-mssql-init          # is_cdc_enabled=1
+kubectl -n {{ .Values.global.namespace }} logs cdc-oracle-0 | grep '초기화 완료'
+
+[사람이 붙을 때 — docker 시절 포트 그대로]
+kubectl -n {{ .Values.global.namespace }} port-forward svc/cdc-oracle   11521:{{ .Values.oracle.port }}
+kubectl -n {{ .Values.global.namespace }} port-forward svc/cdc-mssql    11433:{{ .Values.mssql.port }}
+kubectl -n {{ .Values.global.namespace }} port-forward svc/cdc-postgres 15432:{{ .Values.postgres.port }}
+kubectl -n {{ .Values.global.namespace }} port-forward svc/cdc-mysql    13306:{{ .Values.mysql.port }}
+
+[주의]
+- oracle/postgres/mysql 초기화는 빈 볼륨 첫 기동에만 → 스키마 변경 = PVC(data-cdc-<db>-0) 삭제 후 재생성
+- oracle 첫 기동은 최대 15분 (startupProbe) — 메모리로 못 뜨면 sgaTarget/pgaAggregateTarget 부터 낮춘다
+- helm uninstall 은 PVC 를 남긴다

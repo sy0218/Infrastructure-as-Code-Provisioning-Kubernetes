@@ -1,0 +1,181 @@
+# ===============================================
+# [cdc-oracle — CDC 소스 (LogMiner)]
+#
+# - ConfigMap(initdb .sh, 0755) + StatefulSet(1) + ClusterIP
+# - 전제조건이 가장 많다: ARCHIVELOG·FORCE LOGGING(이미지 env) / 보충로깅·c##dbzuser·LOGMINER_TBS(initdb)
+# - command/args 없음 → 이미지 entrypoint 가 DB 생성 → ARCHIVELOG → 초기화 훅을 순서대로 한다
+# ===============================================
+apiVersion: v1
+kind: ConfigMap
+
+metadata:
+  name: cdc-oracle-initdb
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app.kubernetes.io/name: cdc-oracle
+    app.kubernetes.io/component: test-rdb
+    app.kubernetes.io/part-of: data-layer
+
+# ⚠ 볼륨이 빈 첫 기동에만 실행 → 고쳐도 롤아웃으로 반영되지 않는다 (PVC data-cdc-oracle-0 삭제 후 재생성)
+data:
+  01_cdc_setup.sh: |
+{{ tpl (.Files.Get "files/oracle-initdb.sh") . | indent 4 }}
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+
+metadata:
+  name: cdc-oracle
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: cdc-oracle
+    app.kubernetes.io/name: cdc-oracle
+    app.kubernetes.io/component: test-rdb
+    app.kubernetes.io/part-of: data-layer
+
+spec:
+  serviceName: cdc-oracle
+  replicas: 1
+
+  selector:
+    matchLabels:
+      app: cdc-oracle
+
+  template:
+    metadata:
+      labels:
+        app: cdc-oracle
+        app.kubernetes.io/name: cdc-oracle
+        app.kubernetes.io/component: test-rdb
+        app.kubernetes.io/part-of: data-layer
+
+    spec:
+      # Kubernetes Service 환경변수 자동 주입 비활성화
+      enableServiceLinks: false
+
+      # 이미지는 oracle(54321). longhorn 이면 root 0755 볼륨이 와서 첫 기동에 죽는다
+      # ⚠ Always 면 매 기동마다 6GB 데이터파일을 통째로 chown → OnRootMismatch
+      securityContext:
+        fsGroup: 54321
+        fsGroupChangePolicy: OnRootMismatch
+
+      # SHUTDOWN IMMEDIATE 가 끝날 시간
+      terminationGracePeriodSeconds: 120
+
+      containers:
+        - name: oracle
+          image: {{ .Values.global.harborRegistry }}/data-layer/test-rdb-oracle:{{ .Values.global.imageTag }}
+          imagePullPolicy: IfNotPresent
+
+          ports:
+            - name: oracle
+              containerPort: {{ .Values.oracle.port }}
+
+          # 공용 ConfigMap/Secret 을 받지 않는다 (테스트 픽스처)
+          env:
+            # LogMiner 전제조건 둘 → 이미지가 DB 생성 시점에 적용
+            - name: ENABLE_ARCHIVELOG
+              value: "true"
+            - name: ENABLE_FORCE_LOGGING
+              value: "true"
+            # PDB 안의 업무 스키마 겸 계정
+            - name: APP_USER
+              value: {{ .Values.oracle.appUser | quote }}
+            - name: APP_USER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: test-rdb-secrets
+                  key: APP_USER_PASSWORD
+            - name: ORACLE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: test-rdb-secrets
+                  key: ORACLE_PASSWORD
+            # initdb 가 c##dbzuser 를 만들 때만 쓴다
+            - name: DBZ_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: test-rdb-secrets
+                  key: DBZ_PASSWORD
+
+          volumeMounts:
+            - name: data
+              mountPath: {{ .Values.oracle.oradataPath }}
+            - name: initdb
+              mountPath: /container-entrypoint-initdb.d
+              readOnly: true
+
+          # 이미지 healthcheck → "PDB 가 OPEN 이고 초기화 스크립트까지 끝났는가"
+          # 빈 볼륨 첫 기동 = DB 생성 + ARCHIVELOG 전환 + initdb → 15초 × 60 = 15분
+          startupProbe:
+            exec:
+              command: ["/bin/bash", "-c", "/opt/oracle/healthcheck.sh"]
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 60
+
+          readinessProbe:
+            exec:
+              command: ["/bin/bash", "-c", "/opt/oracle/healthcheck.sh"]
+            periodSeconds: 20
+            timeoutSeconds: 10
+            failureThreshold: 3
+
+          livenessProbe:
+            exec:
+              command: ["/bin/bash", "-c", "/opt/oracle/healthcheck.sh"]
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 6
+
+          # requests 는 당분간 주석 처리 — 노드 여유가 없다 (304-airflow 와 같은 임시 조치)
+          # 실사용 약 600Mi (SGA+PGA 는 지연 할당). 못 뜨면 values 의 sgaTarget/pgaAggregateTarget 부터 낮춘다
+          # resources:
+          #   requests:
+          #     cpu: "250m"
+          #     memory: "1Gi"
+
+      volumes:
+        - name: initdb
+          configMap:
+            name: cdc-oracle-initdb
+            # ⚠ 실행 비트 필수 → 없으면 이미지가 .sh 를 source 해서 set -e 가 entrypoint 를 죽인다
+            defaultMode: 0755
+
+  # ⚠ helm uninstall 은 이 PVC 를 남긴다
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          app.kubernetes.io/part-of: data-layer
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: {{ .Values.storageClass }}
+        resources:
+          requests:
+            storage: {{ .Values.oracle.storageSize }}
+
+---
+# 이름이 계약 → 커넥터 database.hostname · Airflow 커넥션 cdc_oracle
+# port-forward svc/cdc-oracle 11521:1521
+apiVersion: v1
+kind: Service
+
+metadata:
+  name: cdc-oracle
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: cdc-oracle
+    app.kubernetes.io/name: cdc-oracle
+    app.kubernetes.io/component: test-rdb
+    app.kubernetes.io/part-of: data-layer
+
+spec:
+  type: ClusterIP
+  selector:
+    app: cdc-oracle
+  ports:
+    - name: oracle
+      port: {{ .Values.oracle.port }}
+      targetPort: oracle

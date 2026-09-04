@@ -1,0 +1,166 @@
+# ===============================================
+# [cdc-mysql — CDC 소스 (binlog)]
+#
+# - ConfigMap(initdb) + StatefulSet(1) + ClusterIP
+# - 전제조건: 서버 옵션(ROW/FULL/server-id)은 args, 복제 권한은 initdb
+# ===============================================
+apiVersion: v1
+kind: ConfigMap
+
+metadata:
+  name: cdc-mysql-initdb
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app.kubernetes.io/name: cdc-mysql
+    app.kubernetes.io/component: test-rdb
+    app.kubernetes.io/part-of: data-layer
+
+# ⚠ 볼륨이 빈 첫 기동에만 실행 → 고쳐도 롤아웃으로 반영되지 않는다 (PVC data-cdc-mysql-0 삭제 후 재생성)
+data:
+  01_cdc_test_qm_batches.sql: |
+{{ tpl (.Files.Get "files/mysql-initdb.sql") . | indent 4 }}
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+
+metadata:
+  name: cdc-mysql
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: cdc-mysql
+    app.kubernetes.io/name: cdc-mysql
+    app.kubernetes.io/component: test-rdb
+    app.kubernetes.io/part-of: data-layer
+
+spec:
+  serviceName: cdc-mysql
+  replicas: 1
+
+  selector:
+    matchLabels:
+      app: cdc-mysql
+
+  template:
+    metadata:
+      labels:
+        app: cdc-mysql
+        app.kubernetes.io/name: cdc-mysql
+        app.kubernetes.io/component: test-rdb
+        app.kubernetes.io/part-of: data-layer
+
+    spec:
+      # Kubernetes Service 환경변수 자동 주입 비활성화
+      enableServiceLinks: false
+
+      # InnoDB 더티 페이지를 내리고 닫을 시간
+      terminationGracePeriodSeconds: 60
+
+      containers:
+        - name: mysql
+          image: {{ .Values.global.harborRegistry }}/data-layer/test-rdb-mysql:{{ .Values.global.imageTag }}
+          imagePullPolicy: IfNotPresent
+
+          # 전부 CDC 전제조건: log-bin 없으면 binlog 없음, ROW/FULL 아니면 before 이미지가 빈다,
+          # server-id 가 커넥터(5001)와 겹치면 서로 끊는다, gtid 는 파일 로테이션에 강하다
+          args:
+            - --server-id={{ .Values.mysql.serverId }}
+            - --log-bin=mysql-bin
+            - --binlog-format=ROW
+            - --binlog-row-image=FULL
+            - --gtid-mode=ON
+            - --enforce-gtid-consistency=ON
+            - --binlog-expire-logs-seconds={{ .Values.mysql.binlogExpireSeconds }}
+
+          ports:
+            - name: mysql
+              containerPort: {{ .Values.mysql.port }}
+
+          # 공용 ConfigMap/Secret 을 받지 않는다 (테스트 픽스처)
+          env:
+            - name: MYSQL_DATABASE
+              value: {{ .Values.mysql.database | quote }}
+            - name: MYSQL_USER
+              value: {{ .Values.mysql.user | quote }}
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: test-rdb-secrets
+                  key: MYSQL_PASSWORD
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: test-rdb-secrets
+                  key: MYSQL_ROOT_PASSWORD
+
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/mysql
+            - name: initdb
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+
+          # exec 는 셸이 아니라 변수 확장이 없다 → sh -c
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "exec mysqladmin ping --silent -h 127.0.0.1 -uroot -p\"${MYSQL_ROOT_PASSWORD}\""]
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "exec mysqladmin ping --silent -h 127.0.0.1 -uroot -p\"${MYSQL_ROOT_PASSWORD}\""]
+            initialDelaySeconds: 90
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 6
+
+          # requests 는 당분간 주석 처리 — 노드 여유가 없다 (304-airflow 와 같은 임시 조치)
+          # resources:
+          #   requests:
+          #     cpu: "100m"
+          #     memory: "384Mi"
+
+      volumes:
+        - name: initdb
+          configMap:
+            name: cdc-mysql-initdb
+
+  # ⚠ helm uninstall 은 이 PVC 를 남긴다
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          app.kubernetes.io/part-of: data-layer
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: {{ .Values.storageClass }}
+        resources:
+          requests:
+            storage: {{ .Values.mysql.storageSize }}
+
+---
+# 이름이 계약 → 커넥터 database.hostname · Airflow 커넥션 cdc_mysql
+# port-forward svc/cdc-mysql 13306:3306
+apiVersion: v1
+kind: Service
+
+metadata:
+  name: cdc-mysql
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: cdc-mysql
+    app.kubernetes.io/name: cdc-mysql
+    app.kubernetes.io/component: test-rdb
+    app.kubernetes.io/part-of: data-layer
+
+spec:
+  type: ClusterIP
+  selector:
+    app: cdc-mysql
+  ports:
+    - name: mysql
+      port: {{ .Values.mysql.port }}
+      targetPort: mysql

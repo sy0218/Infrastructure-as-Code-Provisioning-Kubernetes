@@ -1,0 +1,85 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "test-rdb values",
+  "description": "이 차트가 실제로 참조하는 키만 required 로 선언한다(values.common.yaml 을 -f 로 주지 않으면 렌더 전에 실패).",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["global", "storageClass", "secrets", "oracle", "mssql", "postgres", "mysql"],
+  "definitions": {
+    "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+    "size": { "type": "string", "pattern": "^[0-9]+(Ei|Pi|Ti|Gi|Mi|Ki)$" },
+    "ident": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_#]*$" }
+  },
+  "properties": {
+    "global": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["namespace", "harborRegistry", "imageTag"],
+      "properties": {
+        "namespace": { "type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", "maxLength": 63 },
+        "harborRegistry": { "type": "string", "pattern": "^[a-z0-9]([-.a-z0-9]*[a-z0-9])?(:[0-9]+)?$" },
+        "imageTag": { "type": "string", "minLength": 1 }
+      }
+    },
+    "storageClass": { "type": "string", "minLength": 1 },
+    "secrets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cdcSourceDbPassword"],
+      "properties": { "cdcSourceDbPassword": { "type": "string", "minLength": 8 } }
+    },
+    "oracle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["port", "cdbName", "pdbName", "appUser", "dbzUser", "sgaTarget", "pgaAggregateTarget", "oradataPath", "storageSize"],
+      "properties": {
+        "port": { "$ref": "#/definitions/port" },
+        "cdbName": { "$ref": "#/definitions/ident" },
+        "pdbName": { "$ref": "#/definitions/ident" },
+        "appUser": { "$ref": "#/definitions/ident" },
+        "dbzUser": { "type": "string", "pattern": "^c##[A-Za-z0-9_]+$", "description": "CDB 공통유저 — c## 접두 필수" },
+        "sgaTarget": { "type": "string", "pattern": "^[0-9]+[MG]$" },
+        "pgaAggregateTarget": { "type": "string", "pattern": "^[0-9]+[MG]$" },
+        "oradataPath": { "type": "string", "pattern": "^/" },
+        "storageSize": { "$ref": "#/definitions/size" }
+      }
+    },
+    "mssql": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["port", "database", "edition", "memoryLimitMb", "storageSize"],
+      "properties": {
+        "port": { "$ref": "#/definitions/port" },
+        "database": { "$ref": "#/definitions/ident" },
+        "edition": { "type": "string", "enum": ["Developer", "Express", "Standard", "Enterprise", "Web"] },
+        "memoryLimitMb": { "type": "integer", "minimum": 256 },
+        "storageSize": { "$ref": "#/definitions/size" }
+      }
+    },
+    "postgres": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["port", "database", "user", "publication", "storageSize"],
+      "properties": {
+        "port": { "$ref": "#/definitions/port" },
+        "database": { "$ref": "#/definitions/ident" },
+        "user": { "$ref": "#/definitions/ident" },
+        "publication": { "$ref": "#/definitions/ident" },
+        "storageSize": { "$ref": "#/definitions/size" }
+      }
+    },
+    "mysql": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["port", "database", "user", "serverId", "binlogExpireSeconds", "storageSize"],
+      "properties": {
+        "port": { "$ref": "#/definitions/port" },
+        "database": { "$ref": "#/definitions/ident" },
+        "user": { "$ref": "#/definitions/ident" },
+        "serverId": { "type": "integer", "minimum": 1, "not": { "const": 5001 }, "description": "커넥터 database.server.id(5001) 와 겹치면 안 된다" },
+        "binlogExpireSeconds": { "type": "integer", "minimum": 0 },
+        "storageSize": { "$ref": "#/definitions/size" }
+      }
+    }
+  }
+}

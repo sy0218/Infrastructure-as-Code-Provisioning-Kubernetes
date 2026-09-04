@@ -1,0 +1,256 @@
+# ===============================================
+# [cdc-mssql — CDC 소스 (네이티브 CDC)]
+#
+# - ConfigMap(init SQL) + StatefulSet(1) + ClusterIP + 초기화 Job(helm hook)
+# - SQL Agent 잡이 변경분을 cdc.* 로 옮기고 Debezium 이 폴링 → Agent 가 멈추면 캡처도 멈춘다
+# - 넷 중 유일하게 이미지에 초기화 훅이 없다 → Job 이 서버 기동 후 스키마 + sp_cdc_enable_* 를 돌린다
+# ===============================================
+apiVersion: v1
+kind: ConfigMap
+
+metadata:
+  name: cdc-mssql-initdb
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app.kubernetes.io/name: cdc-mssql
+    app.kubernetes.io/component: test-rdb
+    app.kubernetes.io/part-of: data-layer
+
+data:
+  01_cdc_test_qm_qc_result.sql: |
+{{ tpl (.Files.Get "files/mssql-initdb.sql") . | indent 4 }}
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+
+metadata:
+  name: cdc-mssql
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: cdc-mssql
+    app.kubernetes.io/name: cdc-mssql
+    app.kubernetes.io/component: test-rdb
+    app.kubernetes.io/part-of: data-layer
+
+spec:
+  serviceName: cdc-mssql
+  replicas: 1
+
+  selector:
+    matchLabels:
+      app: cdc-mssql
+
+  template:
+    metadata:
+      labels:
+        app: cdc-mssql
+        app.kubernetes.io/name: cdc-mssql
+        app.kubernetes.io/component: test-rdb
+        app.kubernetes.io/part-of: data-layer
+
+    spec:
+      # Kubernetes Service 환경변수 자동 주입 비활성화
+      enableServiceLinks: false
+
+      # 이미지는 mssql(10001). local-path 는 0777 이라 없어도 뜨지만 longhorn 이면 root 0755 로 와서 죽는다
+      securityContext:
+        fsGroup: 10001
+        fsGroupChangePolicy: OnRootMismatch
+
+      # 체크포인트 후 닫을 시간
+      terminationGracePeriodSeconds: 60
+
+      containers:
+        - name: mssql
+          image: {{ .Values.global.harborRegistry }}/data-layer/test-rdb-mssql:{{ .Values.global.imageTag }}
+          imagePullPolicy: IfNotPresent
+
+          ports:
+            - name: mssql
+              containerPort: {{ .Values.mssql.port }}
+
+          # args 없음 → 이미지 CMD(sqlservr) 그대로, 설정은 MSSQL_* env
+          env:
+            - name: ACCEPT_EULA
+              value: "Y"
+            - name: MSSQL_PID
+              value: {{ .Values.mssql.edition | quote }}
+            # ⚠ CDC 의 실행 주체 → 꺼지면 커넥터는 RUNNING 인데 토픽만 빈다
+            - name: MSSQL_AGENT_ENABLED
+              value: "true"
+            - name: MSSQL_MEMORY_LIMIT_MB
+              value: {{ .Values.mssql.memoryLimitMb | quote }}
+            - name: MSSQL_SA_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: test-rdb-secrets
+                  key: MSSQL_SA_PASSWORD
+
+          volumeMounts:
+            - name: data
+              mountPath: /var/opt/mssql
+
+          # sqlcmd 18 은 TLS 검증이 기본 → 자체 서명 인증서라 -C 필수 (커넥터의 database.encrypt=false 와 같은 이유)
+          readinessProbe:
+            exec:
+              command: ["/bin/sh", "-c", "exec /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P \"${MSSQL_SA_PASSWORD}\" -Q 'SELECT 1' -b -l 5"]
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 10
+            failureThreshold: 12
+
+          livenessProbe:
+            exec:
+              command: ["/bin/sh", "-c", "exec /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P \"${MSSQL_SA_PASSWORD}\" -Q 'SELECT 1' -b -l 5"]
+            initialDelaySeconds: 120
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 6
+
+          # requests 는 당분간 주석 처리 — 노드 여유가 없다 (304-airflow 와 같은 임시 조치)
+          # resources:
+          #   requests:
+          #     cpu: "250m"
+          #     memory: "1Gi"
+
+  # ⚠ helm uninstall 은 이 PVC 를 남긴다
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          app.kubernetes.io/part-of: data-layer
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: {{ .Values.storageClass }}
+        resources:
+          requests:
+            storage: {{ .Values.mssql.storageSize }}
+
+---
+# 이름이 계약 → 커넥터 database.hostname · Airflow 커넥션 cdc_mssql
+# port-forward svc/cdc-mssql 11433:1433
+apiVersion: v1
+kind: Service
+
+metadata:
+  name: cdc-mssql
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: cdc-mssql
+    app.kubernetes.io/name: cdc-mssql
+    app.kubernetes.io/component: test-rdb
+    app.kubernetes.io/part-of: data-layer
+
+spec:
+  type: ClusterIP
+  selector:
+    app: cdc-mssql
+  ports:
+    - name: mssql
+      port: {{ .Values.mssql.port }}
+      targetPort: mssql
+
+---
+# ===============================================
+# [cdc-mssql 초기화 Job — 스키마 + 네이티브 CDC 활성화]
+#
+# - helm hook(post-install/upgrade) → STS·Service 뒤에 돌고 Helm 이 완료를 기다린다
+#   (첫 기동은 이미지 pull + 서버 기동에 수 분 → helm install 에 --timeout 20m)
+# - before-hook-creation → 실행 직전에 옛 Job 을 지운다 (Job spec 불변 우회)
+# - SQL 이 전부 IF NOT EXISTS 라 upgrade 마다 다시 돌아도 안전하다
+# ===============================================
+apiVersion: batch/v1
+kind: Job
+
+metadata:
+  name: cdc-mssql-init
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: cdc-mssql-init
+    app.kubernetes.io/name: cdc-mssql-init
+    app.kubernetes.io/component: test-rdb
+    app.kubernetes.io/part-of: data-layer
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-delete-policy: before-hook-creation
+
+spec:
+  # 예산: 파드 대기 루프 300s × 최대 3회 < activeDeadlineSeconds 900 < helm --timeout 20m
+  backoffLimit: 3
+  activeDeadlineSeconds: 900
+
+  template:
+    metadata:
+      labels:
+        app: cdc-mssql-init
+        app.kubernetes.io/name: cdc-mssql-init
+        app.kubernetes.io/component: test-rdb
+        app.kubernetes.io/part-of: data-layer
+
+    spec:
+      # Kubernetes Service 환경변수 자동 주입 비활성화
+      enableServiceLinks: false
+
+      # 파드를 새로 만들지 않고 컨테이너만 다시 돌린다
+      restartPolicy: OnFailure
+
+      containers:
+        - name: mssql-init
+          # 서버와 같은 이미지 → sqlcmd 가 그 안에 있다
+          image: {{ .Values.global.harborRegistry }}/data-layer/test-rdb-mssql:{{ .Values.global.imageTag }}
+          imagePullPolicy: IfNotPresent
+
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+
+              # 함수인 이유: 문자열 변수면 비밀번호에 공백이 섞이는 순간 인자가 쪼개진다
+              sqlcmd_run() {
+                /opt/mssql-tools18/bin/sqlcmd -C -S "cdc-mssql.{{ .Values.global.namespace }}.svc.cluster.local,{{ .Values.mssql.port }}" \
+                  -U sa -P "${MSSQL_SA_PASSWORD}" "$@"
+              }
+
+              # 포트가 아니라 "sa 로 붙어 쿼리가 돈다" 까지 확인 (5초 × 60 = 5분)
+              tries=0
+              until sqlcmd_run -Q "SELECT 1" -b -l 5 >/dev/null 2>&1; do
+                tries=$((tries + 1))
+                if [ "${tries}" -ge 60 ]; then
+                  echo "SQL Server 가 5분 안에 응답하지 않음 — 컨테이너를 재시작해 다시 시도한다"
+                  exit 1
+                fi
+                echo "  SQL Server 미응답(#${tries}) — 5초 후 재시도"
+                sleep 5
+              done
+
+              # -b: 오류가 나면 0 이 아닌 코드로 끝난다
+              echo "스키마 + CDC 활성화 적용..."
+              sqlcmd_run -b -i /init/01_cdc_test_qm_qc_result.sql
+
+              sqlcmd_run -b -h -1 -W -Q \
+                "SELECT CONCAT('is_cdc_enabled=', CAST(is_cdc_enabled AS varchar)) FROM sys.databases WHERE name=N'{{ .Values.mssql.database }}'"
+              echo "cdc-mssql 초기화 완료."
+
+          env:
+            - name: MSSQL_SA_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: test-rdb-secrets
+                  key: MSSQL_SA_PASSWORD
+
+          volumeMounts:
+            - name: init-sql
+              mountPath: /init
+              readOnly: true
+
+          # requests 는 당분간 주석 처리 — 노드 여유가 없다 (304-airflow 와 같은 임시 조치)
+          # resources:
+          #   requests:
+          #     cpu: "100m"
+          #     memory: "128Mi"
+
+      volumes:
+        - name: init-sql
+          configMap:
+            name: cdc-mssql-initdb
