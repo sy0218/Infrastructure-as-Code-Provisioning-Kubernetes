@@ -1,0 +1,228 @@
+# =====================================================
+# [values.common.yaml]
+# - 전체 Helm Chart에서 사용하는 공통 설정
+# - 각 Chart의 values.yaml에는 global 값을 정의하지 않음
+#
+# 사용:
+#   helm install <release> ./<chart> -f values.common.yaml -n <namespace>
+#
+# 규칙:
+# - 여러 Chart에서 사용하는 값
+# - 노드 / 포트 등 클러스터 공통 값
+# - 300-data-layer-base가 생성하는 공통 설정에서 사용하는 값
+#
+# → Chart 전용 설정은 각 values.yaml에서 관리
+# → 파생값은 _helpers.tpl에서 생성
+# =====================================================
+
+global:
+
+  # -----------------------------------------------
+  # 클러스터 기본
+  # -----------------------------------------------
+
+  # 공통 Namespace
+  namespace: "data-layer"
+
+  # Harbor 이미지 Registry
+  harborRegistry: "data-layer-harbor:80"
+
+  # 공통 이미지 태그
+  imageTag: "v0.1.0"
+
+  # Ingress Controller
+  ingressClassName: "nginx"
+
+  # 클러스터 Node 목록
+  # hostNetwork 워크로드의 Node 배치 기준
+  nodes:
+    - name: ap
+      ip: 192.168.56.38
+    - name: s1
+      ip: 192.168.56.39
+    - name: s2
+      ip: 192.168.56.40
+
+
+  # ---------------------------------------------------
+  # Kafka
+  # ---------------------------------------------------
+
+  kafka:
+    # Broker 배치 Node
+    # 개수 = replicas / 순서 = Pod ordinal
+    brokers:
+      - name: ap
+        ip: 192.168.56.38
+      - name: s1
+        ip: 192.168.56.39
+      - name: s2
+        ip: 192.168.56.40
+
+    # hostNetwork 포트
+    ports:
+      client: 9092
+      interBroker: 9093
+      controller: 9094
+      jmx: 9404
+
+    # Kafka 연계 서비스 포트
+    schemaRegistryPort: 9096
+    connectPort: 8083
+
+    # Kafka 클러스터 이름
+    name: "kafka"
+
+    # KRaft Controller 개수
+    controllers: 3
+
+    # Topic 기본 설정
+    replicationFactor: 3
+    minInsyncReplicas: 1
+    numPartitions: 3
+
+    # Broker 데이터 디렉토리
+    data:
+      path: "/data/kafka-broker"
+      size: "10Gi"
+
+    # KRaft 메타데이터 디렉토리
+    metadata:
+      path: "/data/kafka-controller"
+      size: "2Gi"
+
+
+  # ---------------------------------------------------
+  # Hadoop (HDFS HA)
+  # ---------------------------------------------------
+
+  hadoop:
+    # StatefulSet 이름 접두사
+    name: "hadoop"
+
+    # HDFS 논리 이름
+    # fs.defaultFS = hdfs://datalayer
+    nameservice: "datalayer"
+
+    # 각 구성요소의 Node 배치
+    namenode:
+      nodeNames: ["ap", "s1"]
+    journalnode:
+      nodeNames: ["ap", "s1", "s2"]
+    zookeeper:
+      nodeNames: ["ap", "s1", "s2"]
+    datanode:
+      nodeNames: ["ap", "s1", "s2"]
+
+    # hostNetwork 포트
+    ports:
+      namenodeRpc: 8020
+      namenodeHttp: 9870
+      journalnodeRpc: 8485
+      journalnodeHttp: 8480
+      zkfc: 8019
+      datanodeData: 9866
+      datanodeIpc: 9867
+      datanodeHttp: 9864
+      zookeeperClient: 2181
+      zookeeperPeer: 2888
+      zookeeperElection: 3888
+      zookeeperMetrics: 7000
+
+
+  # ---------------------------------------------------
+  # Monitoring
+  # ---------------------------------------------------
+
+  # 300-data-layer-base가 생성하는 모니터링 설정
+  alloy:
+    nodeMetricsPath: "/api/v0/component/prometheus.exporter.unix.node/metrics"
+    cadvisorMetricsPath: "/api/v0/component/prometheus.exporter.cadvisor.containers/metrics"
+
+  prometheus:
+    # Prometheus 공통 스크랩 주기
+    scrapeInterval: "30s"
+
+
+  # ---------------------------------------------------
+  # PostgreSQL
+  # ---------------------------------------------------
+
+  postgres:
+    # CNPG Cluster 이름
+    clusterName: "data-layer-postgres"
+
+    port: 5432
+
+    # Collector DB Schema
+    schema: "data_pipeline"
+
+    # 공용 Database
+    databases:
+      collector: "data_layer"
+      airflow: "airflow"
+      icebergCatalog: "iceberg_catalog"
+
+
+  # ---------------------------------------------------
+  # MinIO (301-minio — 클러스터 내부 전용 ClusterIP)
+  # ---------------------------------------------------
+
+  # S3 Endpoint = 301-minio 의 Service `minio` FQDN + ports.api. 소비자가 전부 파드라 Service DNS 로 충분하다.
+  # 이름·포트는 301-minio 차트(templates/service.yaml · values.yaml ports.api)와 같은 커밋 규칙이다.
+  minioEndpoint: "http://minio.data-layer.svc.cluster.local:9000"
+
+
+  # ---------------------------------------------------
+  # Node Local Services
+  # ---------------------------------------------------
+
+  # Neo4j Bolt Endpoint (Ansible 노드 로컬 설치)
+  neo4jBoltUri: "bolt://192.168.56.38:7687"
+
+
+  # ---------------------------------------------------
+  # Ingress Hosts
+  # ---------------------------------------------------
+
+  # /etc/hosts → Ingress VIP → Service
+  hosts:
+    kafkaUi: "data-layer-kafka-ui"
+    airflow: "data-layer-airflow"
+    api: "data-layer-api"
+    grafana: "data-layer-grafana"
+    prometheus: "data-layer-prometheus"
+
+  # Ingress VIP → 305-api 가 파드 hostAliases 로 쓴다 (파드는 data-layer-* 이름을 못 푼다)
+  # ⚠ 102-ingress 의 ingress_vip · Ansible host.yml 의 ingress_vip 와 글자 그대로 같아야 한다
+  ingressVip: "192.168.56.240"
+
+
+  # ---------------------------------------------------
+  # Shared Secrets
+  # ---------------------------------------------------
+
+  # 300-data-layer-base가 Kubernetes Secret으로 생성
+  # 운영 환경에서는 SealedSecrets / SOPS 사용
+  secrets:
+    # MinIO
+    minioUser: "data_layer"
+    minioPassword: "data_layer123!"
+
+    # PostgreSQL
+    postgresUser: "data_layer"
+    postgresPassword: "data_layer123!"
+
+    # Neo4j
+    neo4jUser: "neo4j"
+    neo4jPassword: "datalayer-neo4j"
+
+    # Grafana
+    grafanaAdminUser: "admin"
+    grafanaAdminPassword: "admin"
+
+    # Airflow 암호화 키
+    collectorCryptoKey: "u4_J9Xv9V0XmC_Y7B3V-J1oW7vL6wK2z8x3c4v5b6n7="
+
+    # Data Layer API 인증 키
+    dataLayerApiKey: "b8f79dd470abff9e6b2c2de6b57f1f46081352f03aff4ce3bd1eb359cdbd1abf"
