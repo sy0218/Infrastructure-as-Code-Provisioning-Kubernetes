@@ -1,13 +1,12 @@
 # ===============================================
 # [Longhorn]
 # ===============================================
-# - Kubernetes에서 사용할 분산 스토리지 Longhorn을 설치합니다.
-# - Longhorn은 여러 노드에 데이터를 복제
-#   → 특정 노드에 장애 발생해도 데이터 유지 가능
+# - Kubernetes 분산 스토리지 설치
+# - 노드 간 볼륨 복제로 노드 장애 대응
 #
 # [주의]
-# - Longhorn 설치 전에 필요한 노드 설정은
-# → Ansible의 longhorn_prereq Role에서 미리 준비합니다.
+# - 설치 전 필수 노드 설정은
+#   Ansible longhorn_prereq Role에서 준비
 # ===============================================
 resource "helm_release" "longhorn" {
   name             = "longhorn"
@@ -16,17 +15,21 @@ resource "helm_release" "longhorn" {
   version          = var.longhorn_chart_version
   namespace        = "longhorn-system"
   create_namespace = true
-  timeout          = 600 # manager/driver/UI 등 컴포넌트가 많아 첫 기동이 느리다
+  timeout          = 600 # 초기 컴포넌트 기동 시간 고려
 
   values = [yamlencode({
     persistence = {
-      # 기본 스토리지 클래스는 local-path 가 유지한다
+      # local-path를 기본 StorageClass로 유지
       defaultClass             = false
       defaultClassReplicaCount = var.longhorn_replica_count
     }
+
     defaultSettings = {
-      # 노드의 실제 디스크 마운트 경로와 일치해야 한다 (tfvars 주입)
+      # Longhorn 데이터 디렉터리
       defaultDataPath = var.longhorn_data_path
+
+      # 노드 장애 시 볼륨 사용 파드를 다른 노드로 재배치
+      nodeDownPodDeletionPolicy = "delete-both-statefulset-and-deployment-pod"
     }
   })]
 }
