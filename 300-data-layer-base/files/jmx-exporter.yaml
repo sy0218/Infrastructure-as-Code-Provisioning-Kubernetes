@@ -1,0 +1,98 @@
+# =====================================================
+# Kafka JMX → Prometheus 메트릭 매핑
+# =====================================================
+# Kafka 브로커 JVM에 jmx_prometheus_javaagent를 붙여
+# JMX MBean을 Prometheus 메트릭으로 변환한다.
+#
+# - 활성화/포트(9404): StatefulSet의 KAFKA_OPTS에서 설정
+# - 이 파일: 수집할 MBean과 메트릭 변환 규칙만 정의
+# - 같은 JVM의 로컬 MBeanServer를 사용하므로 hostPort/jmxUrl 불필요
+# =====================================================
+
+ssl: false
+lowercaseOutputName: true
+lowercaseOutputLabelNames: true
+
+# -----------------------------------------------------
+# 수집할 Kafka MBean
+# -----------------------------------------------------
+# 전체 MBean을 수집하지 않고 대시보드에 필요한 것만 명시한다.
+# type=X,name=* : 집계 메트릭 위주로 수집
+# RequestMetrics : request 라벨이 필요하므로 ",*"까지 매칭
+includeObjectNames:
+
+  # Kafka 브로커 공통 메트릭
+  - "kafka.controller:type=KafkaController,name=*"
+  - "kafka.controller:type=ControllerEventManager,name=*"
+  - "kafka.server:type=ReplicaManager,name=*"
+  - "kafka.server:type=BrokerTopicMetrics,name=*"
+  - "kafka.network:type=RequestMetrics,name=TotalTimeMs,*"
+
+  # KRaft 메타데이터
+  - "kafka.server:type=MetadataLoader,name=*"
+
+  # JVM GC / Heap
+  - "java.lang:type=GarbageCollector,*"
+  - "java.lang:type=Memory"
+
+rules:
+
+  # ---------------------------------------------------
+  # Percentile + 라벨
+  # ---------------------------------------------------
+  # 예: request=Produce, 95thPercentile
+  # → quantile 등의 Prometheus 라벨로 변환
+  # 라벨이 있는 규칙을 먼저 적용한다.
+  - pattern: 'kafka.(\w+)<type=(.+), name=(.+), (.+)=(.+)><>(\d+)thPercentile'
+    name: kafka_$1_$2_$3
+    type: GAUGE
+    labels:
+      "$4": "$5"
+      quantile: "0.$6"
+
+  # Percentile + 라벨 없음
+  - pattern: 'kafka.(\w+)<type=(.+), name=(.+)><>(\d+)thPercentile'
+    name: kafka_$1_$2_$3
+    type: GAUGE
+    labels:
+      quantile: "0.$4"
+
+  # ---------------------------------------------------
+  # Count / Value + 라벨
+  # ---------------------------------------------------
+  - pattern: 'kafka.(\w+)<type=(.+), name=(.+), (.+)=(.+)><>(Count|Value)'
+    name: kafka_$1_$2_$3
+    type: GAUGE
+    labels:
+      "$4": "$5"
+
+  # Count / Value + 라벨 없음
+  - pattern: 'kafka.(\w+)<type=(.+), name=(.+)><>(Count|Value)'
+    name: kafka_$1_$2_$3
+    type: GAUGE
+
+  # ---------------------------------------------------
+  # JVM GC
+  # ---------------------------------------------------
+  # GC 이름을 gc 라벨로 변환
+  # 예: G1 Young Generation → gc="..."
+  - pattern: 'java.lang<name=(.+), type=GarbageCollector><>(CollectionCount|CollectionTime)'
+    name: jvm_gc_$2
+    type: GAUGE
+    labels:
+      gc: "$1"
+
+  # JVM GC MBean의 다른 속성 순서도 지원
+  - pattern: 'java.lang<type=GarbageCollector, name=(.+)><>(CollectionCount|CollectionTime)'
+    name: jvm_gc_$2
+    type: GAUGE
+    labels:
+      gc: "$1"
+
+  # ---------------------------------------------------
+  # JVM Heap / NonHeap
+  # ---------------------------------------------------
+  # used / committed / max를 각각 Prometheus 메트릭으로 변환
+  - pattern: 'java.lang<type=Memory><(Heap|NonHeap)MemoryUsage>(used|committed|max)'
+    name: jvm_memory_$1_$2
+    type: GAUGE

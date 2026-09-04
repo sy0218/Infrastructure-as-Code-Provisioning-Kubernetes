@@ -1,72 +1,11 @@
-# ===============================================
-# [ values.yaml ]
-#   - data-layer-base values
+# =====================================================
+# [values.yaml]
+# 300-data-layer-base 전용 설정
 #
-# → data-layer 워크로드 에서 공통으로 사용하는 기본 설정
-# ===============================================
+# 공통값(global.*)은 루트의 values.common.yaml에서 관리한다.
+# 접속 주소 등 파생값은 templates/_helpers.tpl에서 global 값을 조합한다.
+# =====================================================
 
-global:
-  # Kubernetes dasta-layer Namespace
-  namespace: "data-layer"
-
-  # Kafka Broker 접속 주소 — 301-kafka 의 StatefulSet(hostNetwork). 브로커는 노드 IP:9092 로 광고하지만
-  # bootstrap 은 Service DNS 로 둔다 — 노드 IP 를 여기 복사하지 않고, readiness 통과한 브로커만 엔드포인트가 된다.
-  # 클라이언트는 bootstrap 뒤 브로커가 광고한 노드 IP 로 직접 붙는다(DNAT 없음).
-  # [주의] 301-kafka 의 kafka.name(bootstrap Service 이름) · kafka.ports.client 가 이 값의 원본이다
-  #    — 바꾸면 같은 커밋에서 함께 고친다.
-  kafkaBootstrap: "kafka.data-layer.svc.cluster.local:9092"
-
-  # 데이터 저장소 접속 주소
-  minioEndpoint: "http://192.168.0.38:9000"
-  neo4jBoltUri: "bolt://192.168.0.38:7687"
-
-  # PostgreSQL 접속 주소
-  # CNPG Service DNS를 사용하며, failover 시 현재 Primary로 자동 연결
-  postgresHost: "data-layer-postgres-rw.data-layer.svc.cluster.local"
-
-# PostgreSQL Port
-postgresPort: 5432
-
-# 다른 스택과 통신하기 위한 Port
-schemaRegistryPort: 9096 # 301-kafka
-kafkaConnectPort: 8083   # 306-cdc
-
-# Ingress Host
-kafkaUiHost: "data-layer-kafka-ui" # 301-kafka
-airflowHost: "data-layer-airflow"  # 304-airflow
-grafanaHost: "data-layer-grafana"  # 302-monitoring
-
-# 데이터베이스 / 애플리케이션 기본 설정
-collectorDbName: "data_layer"
-collectorDbSchema: "data_pipeline"
-icebergCatalogDbName: "iceberg_catalog"
+# Neo4j 노드 라벨 접두사
+# 운영: "" / 테스트: "Test"
 graphLabelPrefix: "Test"
-
-
-# ===============================================
-# Secrets
-# ===============================================
-
-secrets:
-  # MinIO 인증 정보
-  minioRootUser: "data_layer"
-  minioRootPassword: "data_layer123!"
-
-  # PostgreSQL 애플리케이션 접속 계정
-  # 303-postgres의 사용자 정보와 동일해야 함
-  postgresUser: "data_layer"
-  postgresPassword: "data_layer123!"
-
-  # Airflow collect_job 암호화 키
-  collectorCryptoKey: "u4_J9Xv9V0XmC_Y7B3V-J1oW7vL6wK2z8x3c4v5b6n7="
-
-  # data-layer-api 인증 키
-  dataLayerApiKey: "b8f79dd470abff9e6b2c2de6b57f1f46081352f03aff4ce3bd1eb359cdbd1abf"
-
-  # Neo4j 접속 계정
-  platformNeo4jUser: "neo4j"
-  platformNeo4jPassword: "datalayer-neo4j"
-
-  # Grafana 관리자 계정
-  grafanaAdminUser: "admin"
-  grafanaAdminPassword: "admin"

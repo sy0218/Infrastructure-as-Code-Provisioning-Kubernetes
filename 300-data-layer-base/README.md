@@ -1,27 +1,41 @@
 # 300-data-layer-base — Helm 차트
 
-**Terraform 스택에서 Helm 차트로 전환된 첫 스택.** 워크로드·이미지 없이 공용 오브젝트 4개만
-만든다 — 300번대 전 스택이 이걸 이름으로 참조하므로 번호가 300(맨 먼저)이고, 추후 ArgoCD
-app-of-apps 에서는 sync-wave 0 이 이 순서를 대신 지킨다.
+**공용 오브젝트의 소유자.** 워크로드·이미지 없이 네임스페이스·인증정보·**Kafka 설정 ConfigMap 2종** 을 만든다 —
+300번대 전 스택이 이걸 이름으로 참조하므로 번호가 300(맨 먼저)이고, 추후 ArgoCD app-of-apps 에서는
+sync-wave 0 이 이 순서를 대신 지킨다.
 
 | 오브젝트 | 이름 | 소비 방식 |
 |---|---|---|
 | Namespace | `data-layer` | 전 스택의 배포 대상 (이 차트가 유일한 소유자) |
-| ConfigMap | `data-layer-env` | 워크로드가 `envFrom.configMapRef` 로 통째로 주입 |
-| Secret | `data-layer-secrets` | 워크로드가 `envFrom.secretRef` 로 통째로 주입 |
+| ConfigMap | `data-layer-env` | 워크로드가 `envFrom.configMapRef` 로 통째로 주입 (환경변수) |
+| ConfigMap | `kafka-config` | 301 브로커가 볼륨 마운트 — `server.properties.tpl` |
+| ConfigMap | `kafka-jmx-exporter` | 301 브로커 javaagent 가 읽음 — `config.yaml` (`files/jmx-exporter.yaml`) |
+| Secret | `data-layer-secrets` | 워크로드가 `envFrom.secretRef` 로 통째로 주입 (Opaque) |
+| Secret | `<postgres.clusterName>-app-user` | 303 CNPG 가 role 생성에 사용 (basic-auth) |
 | ClusterRoleBinding | `data-layer-default-admin` | default SA → cluster-admin (저장소 유일의 권한 오브젝트) |
 
-301~307 은 영향 없다 — 그 스택들은 이 디렉토리가 아니라 **클러스터의 ConfigMap** 을
-`data` 소스로 읽으므로, 소유 도구가 Terraform → Helm 으로 바뀌어도 계약(오브젝트 이름·키)은 그대로다.
+**이 차트가 소유하는 설정 ConfigMap 은 Kafka 2종뿐이다.** 302-monitoring 의 `alloy-config`·`prometheus-config`·
+`grafana-datasource` 는 302 자신이 소유한다 — 설정과 파드가 **같은 릴리스**여야 `checksum/*` 자동 롤아웃이 되기 때문이다.
+Kafka 설정만 여기 둔 이유는 브로커가 `updateStrategy: OnDelete` 라 어차피 자동 롤아웃이 없고, `server.properties` 가 참조하는
+값(브로커 표·포트·복제 기본값)이 이 차트의 `KAFKA_BOOTSTRAP`·`controller.quorum.voters` 와 같은 `global.kafka` 원본이라서다.
+그래서 이 ConfigMap 들이 참조하는 값은 `values.common.yaml` 의 `global` 에 있어야 한다(301-kafka values.yaml 이 아니라).
+
+**대가:** Kafka 설정을 바꾸면 `helm upgrade data-layer-base` 뒤에 **브로커를 사람이 한 대씩 재기동**해야 한다
+(301-kafka README '롤링 재기동'). ConfigMap 과 파드가 다른 릴리스라 checksum 이 없고, 반영 여부는 마운트된 파일을 직접 본다.
+
+301~307 은 오브젝트 이름으로 참조하므로 소유 차트가 바뀌어도 계약(이름·키)은 그대로다.
 
 ## values 계약
 
-- `global.*` — 네임스페이스 + 다른 스택/노드의 접속값(Kafka·MinIO·PostgreSQL·Neo4j). MinIO·Neo4j 만
-  노드 주소이고 Kafka(301-kafka StatefulSet)·PostgreSQL(303-postgres CNPG)은 Service DNS 다. 추후 ArgoCD
-  app-of-apps 아래에서는 루트 values 가 주입한다(단독 helm 배포 동안은 이 파일이 단일 출처).
-- 나머지 최상위 키 — 이 차트가 소유한 값(다른 스택 포트·호스트명 미러, DB 이름, `secrets`).
-- `values.schema.json` 이 필수 키·형식(호스트명 밑줄 금지, host:port 형식 등)을 렌더 시점에
-  강제한다 — 구 "환경 의존 변수는 default 없이 tfvars 강제" 규칙의 승계.
+- `global.*` 은 **이 차트에 없다** — 저장소 루트 `values.common.yaml` 이 유일한 정의처이고
+  300번대 차트가 전부 `-f values.common.yaml` 로 같은 파일을 먹는다. 안 주면 스키마가 렌더 전에 막는다.
+- 이 차트 소유 값은 `graphLabelPrefix` 하나뿐이다. 나머지는 전부 global 에서 온다.
+- **접속 주소는 값이 아니라 파생값이다** — `templates/_helpers.tpl` 이 조립한다:
+  `KAFKA_BOOTSTRAP` ← `global.kafka.brokers` × `global.kafka.ports.client` (노드 IP 직결),
+  `COLLECTOR_DB_HOST` ← `global.postgres.clusterName`. 주소 문자열을 values 에 적어 두지 않으므로
+  301·303 과 어긋날 방법이 없다(구 "같은 커밋 규칙" 이 필요 없어졌다).
+- `values.schema.json` 이 이 차트가 참조하는 global 키만 required 로 선언한다 — 구 "환경 의존 변수는
+  default 없이 tfvars 강제" 규칙의 승계.
 - 값 변경 = values 수정 → `helm upgrade`(추후에는 git push + argocd sync). kubectl 직접 수정 금지.
 
 ## 설치 (최초 1회)
@@ -34,8 +48,8 @@ release 기록을 `default` 에 두는 이유: helm 은 설치 기록(Secret)을
 "already exists" 로 충돌하므로 쓰지 않는다(네임스페이스 소유권은 차트에 있어야 한다).
 
 ```bash
-helm template data-layer-base ./300-data-layer-base            # 미리보기 (클러스터 접근 없음)
-helm install data-layer-base ./300-data-layer-base -n default
+helm template data-layer-base ./300-data-layer-base -f values.common.yaml            # 미리보기 (클러스터 접근 없음)
+helm install data-layer-base ./300-data-layer-base -f values.common.yaml -n default
 
 # 확인
 helm -n default ls
@@ -49,10 +63,10 @@ kubectl get clusterrolebinding data-layer-default-admin
 ## 일상 운영
 
 ```bash
-helm lint 300-data-layer-base                                      # 문법 + 스키마 검사
-helm template data-layer-base 300-data-layer-base                  # 렌더 확인 (클러스터 접근 없음)
-helm template data-layer-base 300-data-layer-base | kubectl diff -f -   # 라이브와 대조
-helm upgrade data-layer-base ./300-data-layer-base -n default      # 값 변경 반영
+helm lint 300-data-layer-base -f values.common.yaml                                      # 문법 + 스키마 검사
+helm template data-layer-base 300-data-layer-base -f values.common.yaml                  # 렌더 확인 (클러스터 접근 없음)
+helm template data-layer-base 300-data-layer-base -f values.common.yaml | kubectl diff -f -   # 라이브와 대조
+helm upgrade data-layer-base ./300-data-layer-base -f values.common.yaml -n default      # 값 변경 반영
 ```
 
 ## 추후 ArgoCD

@@ -1,0 +1,38 @@
+# =====================================================
+# Kafka JMX Exporter 설정 → ConfigMap
+# =====================================================
+# Kafka 브로커 Pod에 JMX Exporter 설정 파일을 마운트한다.
+#
+# 흐름:
+# ConfigMap → /opt/jmx/config/config.yaml
+#          → JMX Java Agent가 읽음
+#          → :9404에서 Prometheus 메트릭 노출
+#
+# - JMX Exporter 실행/포트: StatefulSet의 KAFKA_OPTS에서 설정
+# - 이 ConfigMap: JMX 수집 대상과 변환 규칙만 관리
+# - 실제 룰은 files/jmx-exporter.yaml에서 관리
+#
+# 룰 변경:
+# files/jmx-exporter.yaml 수정
+#   → helm upgrade
+#   → checksum 변경 감지
+#   → OnDelete 정책이므로 해당 Pod를 재생성해야 반영
+# =====================================================
+
+apiVersion: v1
+kind: ConfigMap
+
+metadata:
+  name: {{ .Values.global.kafka.name }}-jmx-exporter
+  namespace: {{ .Values.global.namespace }}
+
+  labels:
+    app: kafka
+    app.kubernetes.io/name: kafka
+    app.kubernetes.io/part-of: data-layer
+
+data:
+  # ConfigMap의 key(config.yaml)가
+  # Pod 내부 /opt/jmx/config/config.yaml 파일로 마운트된다.
+  config.yaml: |
+    {{- .Files.Get "files/jmx-exporter.yaml" | nindent 4 }}

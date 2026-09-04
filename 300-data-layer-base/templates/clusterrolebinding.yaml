@@ -1,15 +1,12 @@
-# ===============================================
+# =====================================================
 # Kubernetes API 권한
 #
-# data-layer 네임스페이스의 default ServiceAccount에
+# data-layer namespace의 default ServiceAccount에
 # cluster-admin 권한을 부여한다.
 #
-# 이 권한이 있으면 해당 네임스페이스의 모든 파드가
-#  Kubernetes 클러스터를 관리자 권한으로 접근할 수 있다.
-#
-# 워크로드는 별도 ServiceAccount를 지정하지 않고
+# 별도 ServiceAccount를 지정하지 않는 Pod는
 # default ServiceAccount를 사용한다.
-# ===============================================
+# =====================================================
 
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -21,13 +18,13 @@ metadata:
     app.kubernetes.io/part-of: data-layer
 
 roleRef:
-  # 부여할 권한: 클러스터 관리자
+  # 부여할 권한
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
   name: cluster-admin
 
 subjects:
-  # data-layer 네임스페이스의 default ServiceAccount에 권한 부여
+  # 권한을 부여할 ServiceAccount
   - kind: ServiceAccount
     name: default
     namespace: {{ .Values.global.namespace }}

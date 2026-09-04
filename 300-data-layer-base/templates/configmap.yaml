@@ -1,40 +1,30 @@
-# ===============================================
+# =====================================================
 # [공용 ConfigMap]
 #
-# data-layer의 여러 서비스가 공통으로 사용하는 환경변수다.
-# 각 서비스는 이 ConfigMap을 envFrom으로 주입받는다.
+# data-layer 서비스에서 공통으로 사용하는 환경변수.
+# 각 서비스는 envFrom으로 주입받는다.
 #
-# [주의] 여기의 변수명은 서비스 간 약속이므로
-#    이름을 변경하면 해당 변수를 사용하는 서비스도 같이 수정해야 한다.
-# ===============================================
+# 접속 주소는 _helpers.tpl에서 global 값을 기반으로 생성한다.
+# 변수명은 서비스 간 인터페이스이므로 변경 시 사용처도 함께 수정한다.
+# =====================================================
 
+{{- $svcSuffix := include "datalayer.svcSuffix" . }}
+{{- $bootstrap := include "datalayer.kafkaBootstrap" . }}
+{{- $pgDsn := include "datalayer.postgresDsn" . }}
 
-# ------------------------------------------------
-# 공통 URL / 접속 정보 생성
-# ------------------------------------------------
-
-# 클러스터 내부 Service DNS
-# 예: schema-registry.data-layer.svc.cluster.local
-{{- $svcSuffix := printf "%s.svc.cluster.local" .Values.global.namespace }}
-
-# Kafka Bootstrap 주소에 PLAINTEXT:// 형식을 추가
+# Kafka Bootstrap 주소에 PLAINTEXT 스킴 추가
 {{- $plaintextList := list }}
-{{- range splitList "," .Values.global.kafkaBootstrap }}
+{{- range splitList "," $bootstrap }}
 {{- $plaintextList = append $plaintextList (printf "PLAINTEXT://%s" .) }}
 {{- end }}
-{{- $kafkaBootstrapPlaintext := join "," $plaintextList }}
 
-# Schema Registry / Kafka Connect 접속 URL
-# 포트는 각각 해당 서비스 차트에서 관리한다.
-{{- $schemaRegistryUrl := printf "http://schema-registry.%s:%d" $svcSuffix (int .Values.schemaRegistryPort) }}
-{{- $kafkaConnectUrl := printf "http://cdc-connect.%s:%d" $svcSuffix (int .Values.kafkaConnectPort) }}
-
-# PostgreSQL 공통 접속 정보
-{{- $platformPgDsn := printf "host=%s port=%d dbname=%s user=%s password=%s" .Values.global.postgresHost (int .Values.postgresPort) .Values.collectorDbName .Values.secrets.postgresUser .Values.secrets.postgresPassword }}
-
-# Iceberg가 PostgreSQL Catalog에 접속할 때 사용하는 URL
-{{- $icebergCatalogUri := printf "postgresql+psycopg2://%s:%s@%s:%d/%s" .Values.secrets.postgresUser (urlquery .Values.secrets.postgresPassword) .Values.global.postgresHost (int .Values.postgresPort) .Values.icebergCatalogDbName }}
-
+# Iceberg PostgreSQL Catalog 접속 URL
+{{- $icebergCatalogUri := printf "postgresql+psycopg2://%s:%s@%s:%d/%s"
+      .Values.global.secrets.postgresUser
+      (urlquery .Values.global.secrets.postgresPassword)
+      (include "datalayer.postgresHost" .)
+      (int .Values.global.postgres.port)
+      .Values.global.postgres.databases.icebergCatalog }}
 
 apiVersion: v1
 kind: ConfigMap
@@ -47,16 +37,23 @@ metadata:
 
 data:
 
-  # Kafka / Schema Registry / Kafka Connect
-  KAFKA_BOOTSTRAP: {{ .Values.global.kafkaBootstrap | quote }}
-  KAFKA_BOOTSTRAP_PLAINTEXT: {{ $kafkaBootstrapPlaintext | quote }}
-  SCHEMA_REGISTRY_URL: {{ $schemaRegistryUrl | quote }}
-  KAFKA_CONNECT_URL: {{ $kafkaConnectUrl | quote }}
+  # ---------------------------------------------------
+  # Kafka / Messaging
+  # ---------------------------------------------------
+
+  KAFKA_BOOTSTRAP: {{ $bootstrap | quote }}
+  KAFKA_BOOTSTRAP_PLAINTEXT: {{ join "," $plaintextList | quote }}
+
+  SCHEMA_REGISTRY_URL: {{ printf "http://schema-registry.%s:%d" $svcSuffix (int .Values.global.kafka.schemaRegistryPort) | quote }}
+  KAFKA_CONNECT_URL: {{ printf "http://cdc-connect.%s:%d" $svcSuffix (int .Values.global.kafka.connectPort) | quote }}
   KAFKA_UI_CLUSTER_NAME: "kraft-cluster"
 
 
-  # Kafka Topic 이름
-  # → Producer / Consumer가 동일한 Topic을 사용하기 위한 공통 설정
+  # ---------------------------------------------------
+  # Kafka Topics
+  # ---------------------------------------------------
+  # Producer / Consumer 간 공통 Topic 규칙
+
   CDM_TOPIC: "cdm-topic"
   CDM_DLQ_TOPIC: "dlq-cdm-topic"
   CDM_CONSUMER_RDB_DLQ_TOPIC: "dlq-cdm-consumer-rdb"
@@ -67,50 +64,67 @@ data:
   LINEAGE_DLQ_TOPIC: "dlq-lineage"
 
 
+  # ---------------------------------------------------
   # MinIO / Iceberg
-  # → 객체 저장소와 Iceberg Catalog 접속 정보
+  # ---------------------------------------------------
+
   CDM_OBJSTORE_ENDPOINT: {{ .Values.global.minioEndpoint | quote }}
   CDM_OBJSTORE_BUCKET: "config"
+
   MINIO_S3_ENDPOINT: {{ .Values.global.minioEndpoint | quote }}
   MINIO_WAREHOUSE_BUCKET: "warehouse"
+
   ICEBERG_WAREHOUSE: "s3://warehouse/"
   ICEBERG_CATALOG_URI: {{ $icebergCatalogUri | quote }}
-  ICEBERG_CATALOG_DB_NAME: {{ .Values.icebergCatalogDbName | quote }}
+  ICEBERG_CATALOG_DB_NAME: {{ .Values.global.postgres.databases.icebergCatalog | quote }}
 
 
+  # ---------------------------------------------------
   # PostgreSQL
-  # → 여러 서비스가 공통으로 사용하는 DB 접속 정보
-  PLATFORM_PG_DSN: {{ $platformPgDsn | quote }}
-  LINEAGE_PG_DSN: {{ $platformPgDsn | quote }}
-  TCP_SOCKET_PG_DSN: {{ $platformPgDsn | quote }}
-  COLLECTOR_DB_HOST: {{ .Values.global.postgresHost | quote }}
-  COLLECTOR_DB_PORT: {{ .Values.postgresPort | quote }}
-  COLLECTOR_DB_NAME: {{ .Values.collectorDbName | quote }}
-  COLLECTOR_DB_SCHEMA: {{ .Values.collectorDbSchema | quote }}
+  # ---------------------------------------------------
+
+  PLATFORM_PG_DSN: {{ $pgDsn | quote }}
+  LINEAGE_PG_DSN: {{ $pgDsn | quote }}
+  TCP_SOCKET_PG_DSN: {{ $pgDsn | quote }}
+
+  COLLECTOR_DB_HOST: {{ include "datalayer.postgresHost" . | quote }}
+  COLLECTOR_DB_PORT: {{ .Values.global.postgres.port | quote }}
+  COLLECTOR_DB_NAME: {{ .Values.global.postgres.databases.collector | quote }}
+  COLLECTOR_DB_SCHEMA: {{ .Values.global.postgres.schema | quote }}
 
 
+  # ---------------------------------------------------
   # Neo4j
-  # → Graph 관련 서비스의 DB 접속 정보
+  # ---------------------------------------------------
+
   PLATFORM_NEO4J_URI: {{ .Values.global.neo4jBoltUri | quote }}
   PLATFORM_NEO4J_DATABASE: "neo4j"
   GRAPH_LABEL_PREFIX: {{ .Values.graphLabelPrefix | quote }}
 
 
-  # UI 주소
-  # → 브라우저에서 접근하는 각 서비스의 Ingress 주소
-  # → Ingress가 80 포트를 사용하므로 URL에 별도 포트를 넣지 않는다.
-  KAFKA_UI_URL: {{ printf "http://%s" .Values.kafkaUiHost | quote }}
-  AIRFLOW_UI_URL: {{ printf "http://%s" .Values.airflowHost | quote }}
-  GRAFANA_URL: {{ printf "http://%s" .Values.grafanaHost | quote }}
+  # ---------------------------------------------------
+  # UI
+  # ---------------------------------------------------
+  # 외부 접근용 Ingress 주소
+
+  KAFKA_UI_URL: {{ printf "http://%s" .Values.global.hosts.kafkaUi | quote }}
+  AIRFLOW_UI_URL: {{ printf "http://%s" .Values.global.hosts.airflow | quote }}
+  GRAFANA_URL: {{ printf "http://%s" .Values.global.hosts.grafana | quote }}
 
 
+  # ---------------------------------------------------
   # Data Quality
+  # ---------------------------------------------------
+
   DATA_QUALITY_MAPPER_PREFIX: "cdm-mapper"
   DATA_QUALITY_RESTART_DRAIN_TIMEOUT: "180"
 
 
+  # ---------------------------------------------------
   # Mapper / Consumer / Lineage
-  # → 각 작업의 로그 레벨, Batch 크기, Kafka Consumer Group 등의 실행 설정
+  # ---------------------------------------------------
+  # 공통 실행 설정 및 Kafka Consumer 설정
+
   CDM_MAPPER_LOG_LEVEL: "INFO"
   CDM_WORK_BATCH_SIZE: "500"
   CDM_WORK_BATCH_TIME: "60.0"
@@ -137,32 +151,42 @@ data:
   LINEAGE_BATCH_TIME: "60.0"
 
 
+  # ---------------------------------------------------
   # TCP Socket Collector
-  # → TCP 데이터를 받는 Collector의 실행 설정
+  # ---------------------------------------------------
+  # TCP 수집기 실행 및 연결 설정
+
   TCP_SOCKET_BIND: "0.0.0.0"
   TCP_SOCKET_ORIGIN: "socket.tcp"
   TCP_SOCKET_DLQ_TOPIC: "dlq.raw"
+
   TCP_SOCKET_MAX_CONN: "64"
   TCP_SOCKET_MAX_LINE: "65536"
   TCP_SOCKET_IDLE_TIMEOUT: "300"
+
   TCP_SOCKET_STATS_INTERVAL: "60"
   TCP_SOCKET_REFRESH_INTERVAL: "5"
   TCP_SOCKET_LOG_LEVEL: "INFO"
 
-  # Collector Pod를 찾기 위한 Kubernetes Label Selector
+  # Collector Pod Label Selector
   TCP_SOCKET_CONTAINER: "tcp-socket-collector"
 
 
-  # Grafana Embed
-  # → 다른 화면에서 Grafana를 iframe으로 표시하기 위한 설정
+  # ---------------------------------------------------
+  # Grafana
+  # ---------------------------------------------------
+  # iframe Embed 및 익명 접근 설정
+
   GF_SECURITY_ALLOW_EMBEDDING: "true"
   GF_AUTH_ANONYMOUS_ENABLED: "true"
   GF_AUTH_ANONYMOUS_ORG_ROLE: "Editor"
 
-  # Grafana가 생성하는 리다이렉트/절대 URL의 기준 주소
-  # → GRAFANA_URL과 동일한 주소를 사용한다.
-  GF_SERVER_ROOT_URL: {{ printf "http://%s" .Values.grafanaHost | quote }}
+  # Grafana 외부 접근 기준 URL
+  GF_SERVER_ROOT_URL: {{ printf "http://%s" .Values.global.hosts.grafana | quote }}
 
 
+  # ---------------------------------------------------
   # Airflow
+  # ---------------------------------------------------
+
   AIRFLOW_UID: "50000"

@@ -6,8 +6,8 @@
 # ===================================================
 apiVersion: v2
 name: data-layer-base
-description: "data-layer 워크로드 공용 오브젝트 → Namespace / ConfigMap data-layer-env / Secret data-layer-secrets / ClusterRoleBinding"
+description: "data-layer 워크로드 공용 오브젝트 → Namespace / ConfigMap / Secret data-layer-secrets / ClusterRoleBinding"
 type: application
 
-# Chart 버전은 고정하며, 변경 시 명시적으로 버전을 올린다.
+# Chart 버전 (업그레이드 시 명시적으로 변경)
 version: 0.1.0
