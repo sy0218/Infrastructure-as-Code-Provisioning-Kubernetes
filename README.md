@@ -11,6 +11,7 @@
 - **ArgoCD → GitOps 기반 애플리케이션 지속 배포/상태 동기화**
 
 ---
+</br>
 
 ## ✨ 도구를 나누는 기준
 
@@ -88,6 +89,7 @@ Infrastructure-as-Code-Terraform.kubernetes/
 ```
 
 ---
+</br>
 
 ## 🏗️ Terraform 스택의 공통 파일 구성 (100 ~ 200 스택)
 
@@ -103,8 +105,6 @@ Infrastructure-as-Code-Terraform.kubernetes/
 ```
 > **번호 디렉토리 하나가 독립된 `Terraform` 루트 모듈이며 각자 자기 `state`를 가집니다.**
 
-
-
 > **설계 원칙**
 >
 > - **1개의 번호 디렉토리 = 1개의 독립적인 Terraform 프로젝트**
@@ -112,6 +112,7 @@ Infrastructure-as-Code-Terraform.kubernetes/
 > - 스택 간 의존성은 **배포 순서(디렉토리 번호)** 로 관리합니다.
 
 ---
+</br>
 
 ## ⎈ Helm 차트 스택의 공통 파일 구성 (300 이후)
 
@@ -133,9 +134,9 @@ Infrastructure-as-Code-Terraform.kubernetes/
 docker login data-layer-harbor:80           # 사전: /etc/docker/daemon.json 의 insecure-registries ["data-layer-harbor:80"] (docker 경로 — buildctl 경로는 Ansible buildkitd 롤이 인증 파일을 만든다)
 /project/data_pipeline/scripts/build_and_push.sh v0.1.0
 ```
-- 모든 워크로드는 `data-layer-harbor:80/data-layer/<name>:<tag>` 를 pull 한다 (예외 없음 — `:80` 은 생략 불가, 포트 없는 단일 라벨은 docker.io 네임스페이스로 정규화된다)
+- 모든 워크로드는 `data-layer-harbor:80/data-layer/<name>:<tag>` 를 pull 한다
 - 여기서 쓴 태그를 `values.common.yaml` 의 `global.imageTag` 에 **그대로** 넣는다
-  (예외: `303-postgres/values.yaml` 의 `imageTag` 는 `16.15-<tag>` 형식 — CNPG 가 태그에서 PG 버전을 읽는다. `build_and_push.sh 16.15-<tag> postgres` 로 따로 push)
+  (예외: `303-postgres/values.yaml` 의 `imageTag` 는 `16.15-<tag>` 형식 → CNPG 가 태그에서 PG 버전을 읽는다. `build_and_push.sh 16.15-<tag> postgres` 로 따로 push)
 - `[주의]` `imagePullPolicy: IfNotPresent` 라서 **태그 재사용 금지**
 
 ---
@@ -160,6 +161,7 @@ helm template <릴리스> <차트 디렉토리> | kubectl diff -f -   # 배포 �
 ```
 
 ---
+</br>
 
 ## 1️⃣ 플랫폼 → Terraform (100 ~ 200)
 
@@ -261,7 +263,7 @@ curl -i http://<ingress_vip>/
 ### 🔹4. 103-cnpg
 
 - **CloudNativePG(CNPG) Operator + CRD 설치**
-  - Kubernetes에서 PostgreSQL의 **초기화·복제·Failover**를 자동 관리
+  - Kubernetes에서 PostgreSQL의 **초기화/복제/Failover**를 자동 관리
   - `Cluster`, `Database`, `Pooler` 등의 **CNPG CRD 등록**
 
 - **PostgreSQL 클러스터는 이 스택에서 생성하지 않음**
