@@ -1,7 +1,6 @@
 # ===============================================
 # [ingress-nginx]
-#
-# Kubernetes 클러스터의 HTTP/HTTPS 진입점이다.
+#   - Kubernetes 클러스터의 HTTP/HTTPS 진입점이다.
 #
 # 외부 사용자는 Ingress VIP로 접속하고,
 # ingress-nginx는 요청의 도메인과 경로에 따라
@@ -43,7 +42,7 @@ resource "helm_release" "ingress_nginx" {
           "metallb.io/loadBalancerIPs" = var.ingress_vip
         }
 
-        # 실제 Ingress Controller가 실행 중인 노드에서 외부 트래픽을 처리하도록 한다.
+        # [중요] 실제 Ingress Controller가 실행 중인 노드의 Speaker가 VIP를 광고한다.
         externalTrafficPolicy = "Local"
       }
 

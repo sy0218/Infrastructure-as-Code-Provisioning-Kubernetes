@@ -4,7 +4,7 @@
 #   - CloudNativePG(CNPG) Operator를 설치한다.
 #
 # 이 스택에서는 "PostgreSQL 서버"를 직접 생성하지 않는다.
-# Operator와 CRD만 설치하고,
+# Operator와 CRD만 설치하고 ⤵
 # 실제 PostgreSQL 클러스터는 별도의 303-postgres 스택에서 생성한다.
 #
 # [구성 흐름]

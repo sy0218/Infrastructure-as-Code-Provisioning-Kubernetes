@@ -1,19 +1,18 @@
 # ===============================================
 # [MetalLB]
-#
-# 온프렘 Kubernetes 환경에서
-# Service type: LoadBalancer 기능을 제공한다.
+#   - 온프레미스 Kubernetes 환경에서
+#     → Service type: LoadBalancer 기능을 제공한다.
 #
 # 클라우드 환경에서는 AWS/GCP 등의 클라우드 플랫폼이
-# LoadBalancer Service에 외부 IP를 자동으로 할당한다.
+# → LoadBalancer Service에 외부 IP를 자동으로 할당한다.
 #
-# 하지만 온프렘 환경에는 이 역할을 수행하는 클라우드
-# Load Balancer가 없으므로, MetalLB가 외부 IP(VIP) 할당과
-# 네트워크 광고 역할을 대신한다.
+# 하지만 온프레미스 환경에는 이 역할을 수행하는 클라우드 Load Balancer가 없으므로 ⤵
+# → MetalLB가 외부 IP(VIP) 할당과 네트워크 광고 역할을 한다.
 # ===============================================
 # [이 스택의 역할]
-#
-# → MetalLB 기본 컴포넌트 설치
+#   - MetalLB 기본 컴포넌트 설치 (Controller / Speaker)
+#   - Controller (Deployment) = 외부 IP(VIP) 할당 및 상태 관리
+#   - Speaker (DaemonSet) = 각 Node에서 VIP를 네트워크에 광고
 #
 # VIP 대역(IPAddressPool)과 + VIP 광고 방식(L2Advertisement)은
 # → 102-ingress 스택에서 별도로 관리한다.
@@ -50,12 +49,10 @@ resource "helm_release" "metallb" {
 
     # -------------------------------------------
     # [Controller 리소스]
-    #
-    # → Controller는 MetalLB 설정을 관리하는 Pod다.
-    #     - VIP를 관리하고 할당하는 관리자
-    #
-    # → 1개만 실행된다.
-    #     - Pod가 종료되도 Deployment 컨트롤러가 선언된 상태를 유지합니다.
+    #   - Controller는 MetalLB 설정을 관리하는 Pod 다.
+    #     → VIP를 관리하고 할당하는 관리자
+    #     → 컨트롤러 파드는 1개만 실행된다.
+    #       - Pod가 종료되도 Deployment 컨트롤러가 선언된 상태를 유지합니다.
     #
     # → 매우 가벼운 컴포넌트이므로 필요한 최소 CPU/메모리만 예약한다.
     # -------------------------------------------
@@ -70,9 +67,9 @@ resource "helm_release" "metallb" {
 
     # -------------------------------------------
     # [Speaker 리소스]
-    #
-    # → Speaker는 각 Kubernetes 노드마다 1개씩 실행된다. (DaemonSet)
-    # → L2 방식에서는 Speaker가 VIP를 네트워크에 광고하는 역할을 한다.
+    #   - Speaker는 각 Kubernetes 노드마다 1개씩 실행된다. (DaemonSet)
+    #     → L2 방식에서는 Speaker가 VIP를 ARP로 네트워크에 광고하는 역할을 한다.
+    # 
     # → 가벼운 프로세스이므로 필요한 최소 CPU/메모리만 예약한다.
     # -------------------------------------------
     speaker = {

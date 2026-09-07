@@ -9,12 +9,12 @@
 # -----------------------------------------------
 # [클러스터 접속]
 # -----------------------------------------------
-
 # → Terraform이 Kubernetes 클러스터에 접속할 때 사용하는 설정 파일이다.
 variable "kubeconfig_path" {
   description = "kubeconfig 파일 경로"
   type        = string
 }
+
 
 # -----------------------------------------------
 # [차트 버전]
@@ -28,6 +28,7 @@ variable "longhorn_chart_version" {
   description = "longhorn 차트 버전"
   type        = string
 }
+
 
 # -----------------------------------------------
 # [Longhorn 데이터 경로]

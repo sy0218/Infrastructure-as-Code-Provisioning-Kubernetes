@@ -7,6 +7,7 @@
 #
 # → kubeconfig를 통해 대상 Kubernetes 클러스터에 접속한다.
 # ===============================================
+
 provider "helm" {
   kubernetes = {
     config_path = pathexpand(var.kubeconfig_path)
