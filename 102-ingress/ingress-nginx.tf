@@ -74,8 +74,8 @@ resource "helm_release" "ingress_nginx" {
       # Ingress Controller가 사용할 최소 리소스를 예약한다.
       resources = {
         requests = {
-          cpu    = "50m"
-          memory = "128Mi"
+          cpu    = "20m"
+          memory = "64Mi"
         }
       }
     }
