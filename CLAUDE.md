@@ -135,7 +135,7 @@ helm upgrade monitoring ./302-monitoring -f values.common.yaml -n data-layer
 # 노드 선행작업 (Ansible 저장소에서 — 2인자: <Ansible 절대경로> <all|태그>)
 bin/start_kafka_prereq.sh / start_hadoop_prereq.sh / start_longhorn.sh <경로> all
 bin/start_airflow_repo_prereq.sh <경로> all      # 디렉토리 + rsync      / sync → DAG 반영만
-bin/start_configuration.sh <경로> etc_hosts      # 노드 /etc/hosts 재생성
+bin/start_server_configuration.sh <경로> etc_hosts      # 노드 /etc/hosts 재생성
 ```
 
 | 차트 | 릴리스 이름 | 비고 |
