@@ -62,8 +62,8 @@ resource "helm_release" "metallb" {
     controller = {
       resources = {
         requests = {
-          cpu    = "10m"
-          memory = "32Mi"
+          cpu    = "5m"
+          memory = "16Mi"
         }
       }
     }
@@ -78,8 +78,8 @@ resource "helm_release" "metallb" {
     speaker = {
       resources = {
         requests = {
-          cpu    = "10m"
-          memory = "32Mi"
+          cpu    = "5m"
+          memory = "16Mi"
         }
       }
     }
