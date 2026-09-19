@@ -1,0 +1,163 @@
+# ===============================================
+# [Elasticsearch StatefulSet]
+#
+# - hostNetwork → 파드 IP = 노드 IP = publish 주소 (transport 는 노드 간 직결)
+# - 정적 local PV → ordinal N ↔ nodeNames[N] 고정, 노드가 죽어도 파드를 옮기지 않는다
+# - 장애는 ES 자체 복제(마스터 과반 + 샤드 replica)가 막는다 → 301-kafka 와 같은 원칙
+# - 설정 파일이 없다 → 점(.) 이름 env 가 곧 ES 설정이다
+# - OnDelete → 사람이 한 대씩 지우며 green 확인
+# ===============================================
+apiVersion: apps/v1
+kind: StatefulSet
+
+metadata:
+  name: elasticsearch
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: elasticsearch
+    app.kubernetes.io/name: elasticsearch
+    app.kubernetes.io/part-of: data-layer
+
+spec:
+  # 노드 수 = 설정된 nodeNames 수
+  replicas: {{ len .Values.nodeNames }}
+
+  # 마스터 선출은 과반 → 동시에 기동해야 첫 부트스트랩이 교착하지 않는다
+  podManagementPolicy: Parallel
+
+  # 설정 변경 시 자동 재기동하지 않고 수동으로 순차 재기동
+  updateStrategy:
+    type: OnDelete
+
+  selector:
+    matchLabels:
+      app: elasticsearch
+
+  template:
+    metadata:
+      labels:
+        app: elasticsearch
+        app.kubernetes.io/name: elasticsearch
+        app.kubernetes.io/part-of: data-layer
+
+    spec:
+      # Pod IP 대신 Node IP 를 ES 주소로 사용
+      hostNetwork: true
+
+      # hostNetwork 에서도 Kubernetes DNS 사용
+      dnsPolicy: ClusterFirstWithHostNet
+
+      enableServiceLinks: false
+
+      # 샤드 flush 를 기다리는 시간
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+
+      # 노드 디렉토리(root:root 2770)에 uid 1000 + gid 0 으로 쓴다 → 최상위 소유가 맞으면 재귀 chown 생략
+      securityContext:
+        fsGroup: 0
+        fsGroupChangePolicy: OnRootMismatch
+
+      affinity:
+        podAntiAffinity:
+          # 동일 Node 에 ES 노드가 2개 배치되지 않도록 보장
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app: elasticsearch
+              topologyKey: kubernetes.io/hostname
+
+      containers:
+        - name: elasticsearch
+          image: {{ .Values.global.harborRegistry }}/data-layer/elasticsearch:{{ .Values.global.imageTag }}
+          imagePullPolicy: IfNotPresent
+
+          # 미들웨어라 공용 envFrom 을 쓰지 않는다 → ES 는 앱 env 가 필요 없다
+          env:
+            - name: cluster.name
+              value: "data-layer"
+
+            # node.name = 파드 이름 → initial_master_nodes 가 이 이름을 본다
+            - name: node.name
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+
+            # 전 인터페이스에 바인드하되 광고 주소는 노드 IP 하나로 고정 (hostNetwork 라 인터페이스가 여럿)
+            - name: network.host
+              value: "0.0.0.0"
+            - name: network.publish_host
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+
+            - name: http.port
+              value: {{ .Values.ports.http | quote }}
+            - name: transport.port
+              value: {{ .Values.ports.transport | quote }}
+
+            # 노드 표 → 노드IP:transport 목록 (표에 없는 이름은 렌더 실패)
+            - name: discovery.seed_hosts
+              value: {{ include "elasticsearch.seedHosts" . | quote }}
+
+            # 첫 부트스트랩에만 쓰이고 이후는 무시된다 → 파드 이름이라 안정적이니 그대로 둔다
+            - name: cluster.initial_master_nodes
+              value: {{ include "elasticsearch.initialMasters" . | quote }}
+
+            # 내부 전용 HTTP 평문 → 켜면 TLS·비밀번호 부트스트랩이 따라와 소비자 전부가 인증서를 들어야 한다
+            - name: xpack.security.enabled
+              value: "false"
+
+            # 힙 고정(-Xms=-Xmx) → limits 대신 힙으로 메모리 상한
+            - name: ES_JAVA_OPTS
+              value: {{ printf "-Xms%s -Xmx%s" .Values.heap .Values.heap | quote }}
+
+          ports:
+            - name: http
+              containerPort: {{ .Values.ports.http }}
+            - name: transport
+              containerPort: {{ .Values.ports.transport }}
+
+          volumeMounts:
+            - name: data
+              mountPath: /usr/share/elasticsearch/data
+
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+
+          # 클러스터 상태 yellow 이상이면 요청 처리 가능 (red 면 408 → Service 에서 제외)
+          readinessProbe:
+            httpGet:
+              path: /_cluster/health?wait_for_status=yellow&timeout=1s
+              port: http
+            periodSeconds: 10
+            failureThreshold: 6
+
+          # 부트스트랩·샤드 복구가 끝날 때까지 liveness 검사 지연
+          startupProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 10
+            failureThreshold: 30
+
+          # 정상 기동 후 프로세스 장애 감지
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 60
+            failureThreshold: 5
+
+  # PVC data-elasticsearch-N → PV 의 claimRef 가 미리 묶여 있다
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          app.kubernetes.io/name: elasticsearch
+          app.kubernetes.io/part-of: data-layer
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: {{ .Values.storageClass }}
+        resources:
+          requests:
+            storage: {{ .Values.data.size }}

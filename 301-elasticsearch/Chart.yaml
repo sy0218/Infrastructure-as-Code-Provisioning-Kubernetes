@@ -1,0 +1,23 @@
+# ===================================================
+# [301-elasticsearch]
+#
+# Elasticsearch 3노드 클러스터 → 클러스터 내부 전용 검색 엔진
+#
+# [설계] → 301-kafka 와 같은 원칙: 장애는 쿠버네티스가 아니라 ES 자체 복제로 막는다
+#   - hostNetwork + 정적 local PV → 파드 ↔ 노드 ↔ 디스크 고정, 노드가 죽어도 파드를 옮기지 않는다
+#   - 마스터 과반(3 중 2) + 샤드 replica 1 → 노드 1대 장애를 넘긴다
+#   - 보안(xpack.security)은 끈다 → 소비자가 전부 파드인 내부 HTTP 평문(다른 300번대와 같은 개발 규약)
+#
+# [의존성]
+#   - 300-data-layer-base 선행 배포
+#   - 각 노드에 /data/elasticsearch (Ansible elasticsearch_prereq, root:root 2770)
+#   - Harbor 에 data-layer/elasticsearch 이미지(data_pipeline/data_layer_elasticsearch)
+#   - 노드 vm.max_map_count ≥ 262144 (Ubuntu 24.04 기본 1048576 — 미달이면 부트스트랩 검사로 기동 거부)
+# ===================================================
+apiVersion: v2
+name: elasticsearch
+description: "Elasticsearch 3노드 클러스터 → hostNetwork + 정적 local PV, 장애는 ES 자체 복제로"
+type: application
+
+# Chart 버전 (업그레이드 시 명시적으로 변경)
+version: 0.1.0

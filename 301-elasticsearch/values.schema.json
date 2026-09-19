@@ -1,0 +1,115 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "elasticsearch values",
+  "description": "이 차트가 실제로 참조하는 키만 required 로 선언한다(values.common.yaml 을 -f 로 주지 않으면 렌더 전에 실패). global 에는 다른 차트용 키도 함께 들어오므로 additionalProperties 를 막지 않는다.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["global", "nodeNames", "ports", "storageClass", "data", "heap", "resources", "terminationGracePeriodSeconds"],
+  "properties": {
+    "global": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["namespace", "harborRegistry", "imageTag", "nodes"],
+      "properties": {
+        "namespace": {
+          "type": "string",
+          "description": "RFC 1123 라벨 — 소유자는 300-data-layer-base",
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "maxLength": 63
+        },
+        "harborRegistry": {
+          "type": "string",
+          "description": "스킴 없는 레지스트리 주소",
+          "pattern": "^[a-z0-9]([-.a-z0-9]*[a-z0-9])?(:[0-9]+)?$"
+        },
+        "imageTag": {
+          "type": "string",
+          "description": "공용 이미지 태그 — build_and_push.sh 에 준 태그와 같아야 한다",
+          "minLength": 1
+        },
+        "nodes": {
+          "type": "array",
+          "description": "클러스터 노드 표 — nodeNames → IP 를 여기서 찾는다(discovery.seed_hosts). 이름·IP 중복 금지",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "ip"],
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "kubernetes.io/hostname 값 — nodeNames 가 이 이름을 가리킨다",
+                "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+              },
+              "ip": {
+                "type": "string",
+                "description": "노드 IP (hostNetwork 라 곧 ES publish 주소)",
+                "pattern": "^([0-9]{1,3}\\.){3}[0-9]{1,3}$"
+              }
+            }
+          }
+        }
+      }
+    },
+    "nodeNames": {
+      "type": "array",
+      "description": "파드 배치 노드 — 개수 = replicas, 순서 = ordinal. global.nodes 에 있는 이름만(없으면 렌더 실패)",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" }
+    },
+    "ports": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["http", "transport"],
+      "properties": {
+        "http": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "transport": { "type": "integer", "minimum": 1, "maximum": 65535 }
+      }
+    },
+    "storageClass": {
+      "type": "string",
+      "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+    },
+    "data": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "size"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "노드 로컬 디렉토리 — Ansible group_vars/elasticsearch.yml 의 elasticsearch_data_dir 와 같아야 한다",
+          "pattern": "^/"
+        },
+        "size": { "type": "string", "pattern": "^[0-9]+(Ei|Pi|Ti|Gi|Mi|Ki)$" }
+      }
+    },
+    "heap": {
+      "type": "string",
+      "description": "JVM -Xms/-Xmx 값 (예: 1g, 768m) — 노드 메모리의 절반 이하, 32g 미만",
+      "pattern": "^[0-9]+[mMgG]$"
+    },
+    "resources": {
+      "type": "object",
+      "description": "requests 만 둔다 — limits 는 저장소 규약상 두지 않는다(힙 고정이 상한)",
+      "additionalProperties": false,
+      "required": ["requests"],
+      "properties": {
+        "requests": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["cpu", "memory"],
+          "properties": {
+            "cpu": { "type": "string", "pattern": "^[0-9]+(m)?$" },
+            "memory": { "type": "string", "pattern": "^[0-9]+(Ei|Pi|Ti|Gi|Mi|Ki)$" }
+          }
+        }
+      }
+    },
+    "terminationGracePeriodSeconds": {
+      "type": "integer",
+      "minimum": 30
+    }
+  }
+}

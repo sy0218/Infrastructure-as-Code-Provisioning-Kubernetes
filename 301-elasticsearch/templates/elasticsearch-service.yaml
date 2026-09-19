@@ -1,0 +1,25 @@
+# ===============================================
+# [Elasticsearch Service]
+#   - ClusterIP → 파드 안 소비자의 고정 진입점 (엔드포인트 = 준비된 노드 IP:http)
+#   - transport 는 노드 IP 직결(seed_hosts)이라 Service 에 두지 않는다
+# ===============================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: elasticsearch
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: elasticsearch
+    app.kubernetes.io/name: elasticsearch
+    app.kubernetes.io/part-of: data-layer
+
+spec:
+  type: ClusterIP
+
+  selector:
+    app: elasticsearch
+
+  ports:
+    - name: http
+      port: {{ .Values.ports.http }}
+      targetPort: http

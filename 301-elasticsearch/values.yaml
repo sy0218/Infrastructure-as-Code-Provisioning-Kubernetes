@@ -1,0 +1,34 @@
+# ===============================================
+# [301-elasticsearch 전용 설정]
+# → 공통값(global.*)은 values.common.yaml에서 관리 (노드 IP 는 global.nodes 파생)
+# ===============================================
+
+# 파드 배치 노드 → 개수 = replicas, 순서 = 파드 ordinal (elasticsearch-N ↔ nodeNames[N])
+# global.nodes 에 없는 이름은 렌더 실패. 증설은 뒤에 붙이고 축소는 뒤에서 뺀다
+nodeNames: ["ap", "s1", "s2"]
+
+# hostNetwork 포트 → 노드 전체에서 유일해야 한다 (ss -lnt)
+ports:
+  http: 9200
+  transport: 9300
+
+# 정적 Local PV용 StorageClass
+storageClass: "elasticsearch-local"
+
+# 노드 로컬 데이터 디렉토리
+# → Ansible elasticsearch_prereq 가 root:root 2770 으로 만든다 (group_vars/elasticsearch.yml 과 글자 그대로 같아야 한다)
+data:
+  path: "/data/elasticsearch"
+  size: "20Gi"
+
+# JVM 힙(-Xms = -Xmx 고정) → limits 대신 힙으로 메모리 상한
+heap: "1g"
+
+# 힙 + 오프힙/페이지캐시 여유 → 힙을 올리면 같이 올린다
+resources:
+  requests:
+    cpu: "250m"
+    memory: "1536Mi"
+
+# 정상 종료(샤드 flush) 대기 시간
+terminationGracePeriodSeconds: 60

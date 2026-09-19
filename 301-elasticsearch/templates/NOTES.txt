@@ -1,0 +1,19 @@
+Elasticsearch 배포 완료 → Release {{ .Release.Name }} / Chart {{ .Chart.Name }}-{{ .Chart.Version }}
+
+[구성]
+- StatefulSet : elasticsearch ×{{ len .Values.nodeNames }} (hostNetwork, OnDelete, 힙 {{ .Values.heap }}) → 노드 {{ join " / " .Values.nodeNames }}
+- PV          : elasticsearch-<노드> ({{ .Values.data.path }}, {{ .Values.data.size }}, {{ .Values.storageClass }}) → PVC data-elasticsearch-N 에 고정
+- Service     : elasticsearch (ClusterIP {{ .Values.ports.http }} HTTP) → transport {{ .Values.ports.transport }} 는 노드 IP 직결
+
+[접속]
+- 클러스터 내부 : http://elasticsearch.{{ .Values.global.namespace }}.svc.cluster.local:{{ .Values.ports.http }} (보안 off, HTTP 평문)
+- 노드 직결     : http://<노드 IP>:{{ .Values.ports.http }}
+
+[확인]
+kubectl -n {{ .Values.global.namespace }} get pod,pv,pvc -l app.kubernetes.io/name=elasticsearch -o wide
+curl -s '{{ include "elasticsearch.nodeIp" (dict "root" . "name" (index .Values.nodeNames 0)) }}:{{ .Values.ports.http }}/_cluster/health?pretty'   # status green, number_of_nodes {{ len .Values.nodeNames }}
+
+[주의]
+- updateStrategy OnDelete → 설정·이미지 변경 후 파드를 한 대씩 지우며 green 을 확인한다
+- 노드가 죽으면 그 파드는 옮겨 가지 않는다 → 남은 2대가 replica 로 서비스를 잇는다 (README '노드 장애')
+- helm uninstall 은 PVC 를 남긴다 → 재설치 전 PVC 삭제 (PV Retain 이라 디스크 데이터는 그대로)

@@ -1,0 +1,19 @@
+# ===============================================
+# [Elasticsearch StorageClass → 정적 Local PV]
+#   - elasticsearch-persistentvolumes.yaml 이 미리 만든 Local PV 만 쓴다
+#
+# - no-provisioner → PV를 자동 생성하지 않음
+# - WaitForFirstConsumer → Pod 스케줄링 시점에 PV 바인딩
+# - Retain → PVC 삭제 후에도 PV와 데이터 유지
+# ===============================================
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+
+metadata:
+  name: {{ .Values.storageClass }}
+  labels:
+    app.kubernetes.io/part-of: data-layer
+
+provisioner: kubernetes.io/no-provisioner
+volumeBindingMode: WaitForFirstConsumer
+reclaimPolicy: Retain
