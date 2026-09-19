@@ -1,8 +1,7 @@
 # ===============================================
 # [PostgreSQL ClusterIP Service]
-#
-# PostgreSQL Pod의 메트릭을 Prometheus가 수집하기 위한 Service.
-# 클러스터 내부에서만 사용하므로 ClusterIP로 구성한다.
+#   - PostgreSQL Pod의 메트릭을 Prometheus가 수집하기 위한 Service.
+#     → 클러스터 내부에서만 사용하므로 ClusterIP로 구성한다.
 #
 # Prometheus
 #    ↓

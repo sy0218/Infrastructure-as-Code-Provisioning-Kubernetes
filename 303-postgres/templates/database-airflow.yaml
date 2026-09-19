@@ -1,8 +1,7 @@
 # ===============================================
 # [Airflow DB → Database CR]
-#
-# CNPG가 Airflow용 빈 DB를 생성한다.
-# DB 스키마/테이블은 Airflow init Job의 `airflow db migrate`가 관리한다.
+#   - CNPG가 Airflow용 빈 DB를 생성한다.
+#   - DB 스키마/테이블은 Airflow init Job의 `airflow db migrate`가 관리한다.
 # ===============================================
 apiVersion: postgresql.cnpg.io/v1
 kind: Database

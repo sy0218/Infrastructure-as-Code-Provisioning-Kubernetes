@@ -1,8 +1,8 @@
 # ===================================================
 # [303-postgres]
-# → 플랫폼 공용 PostgreSQL 배포
-# → CNPG Cluster 1개 (Primary 1 + Replica 1)
-# → Airflow / Collector / Iceberg 등의 DB 사용
+#   - 플랫폼 공용 PostgreSQL 배포
+#     → CNPG Cluster 1개 (Primary 1 + Replica 1)
+#     → Airflow / Collector / Iceberg 등의 DB 사용
 #
 # [배포 순서]
 # 103-cnpg → 300-data-layer-base → 303-postgres → 304-...

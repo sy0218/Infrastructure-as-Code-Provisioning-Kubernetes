@@ -28,7 +28,7 @@ Cluster 의 `bootstrap.initdb` + `postInitApplicationSQL` 이 빈 볼륨 최초 
   `ICEBERG_CATALOG_URI`)을 조립한다. 클러스터 이름 하나에서 `<clusterName>-rw.<ns>.svc.cluster.local` 이
   파생되므로 주소 복사본이 없다.
 - 나머지 최상위 키 — 이 차트가 소유한 값(`instances`·`nodeNames`·`imageTag`·`storage`·`externalIp`).
-  **`imageTag`(`16.15-v0.1.1`)는 `global.imageTag` 를 쓰지 않는 유일한 값이다** — CNPG 웹훅이 태그에서 PG 메이저를 읽어
+  **`imageTag`(`16.15-v0.1.0`)는 `global.imageTag` 를 쓰지 않는 유일한 값이다** — CNPG 웹훅이 태그에서 PG 메이저를 읽어
   `v0.1.0` 은 "invalid version tag" 로 거부된다. 앞자리는 이미지의 실제 PG 버전, 뒷자리는 `build_and_push.sh` 에 준 태그다.
 - `values.schema.json` 이 필수 키·형식을 렌더 시점에 강제한다.
 
@@ -68,7 +68,7 @@ pyiceberg 자체 DDL·`create_hypertable` 모두 통과하고, superuser 가 필
 전제: **103-cnpg apply 완료**(CRD — 없으면 install 이 "no matches for kind Cluster" 로 죽는다.
 `helm template` 은 CRD 검증을 안 해 통과한다), 300-data-layer-base 설치 완료(네임스페이스),
 이미지 `postgres` 가 values `imageTag` 와 같은 태그로 Harbor 에 push 되어 있을 것
-(`/project/data_pipeline/scripts/build_and_push.sh 16.15-v0.1.1 postgres` — 오퍼레이터 이미지는 103-cnpg 가 차트 기본 ghcr.io 를 쓴다),
+(`/project/data_pipeline/scripts/build_and_push.sh 16.15-v0.1.0 postgres` — 오퍼레이터 이미지는 103-cnpg 가 차트 기본 ghcr.io 를 쓴다),
 외부 VIP 는 102-ingress 의 `postgres-vip` 풀 필요.
 
 release 를 `data-layer` 에 두는 이유: 네임스페이스가 이미 있고, 이 차트의 오브젝트 전부가

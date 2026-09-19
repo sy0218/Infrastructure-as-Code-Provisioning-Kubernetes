@@ -1,14 +1,12 @@
 # ===============================================
 # [PostgreSQL → CNPG Cluster]
-#
-# CNPG Operator가 이 Cluster 커스텀 리소스를 기준으로
-# Pod / PVC / Service / 복제 / Failover 등을 자동 관리한다.
+#   - CNPG Operator가 이 Cluster 커스텀 리소스를 기준으로
+#     → Pod / PVC / Service / 복제 / Failover 등을 자동 관리한다.
 #
 # [주의]
 # Pod는 CNPG Operator가 관리하므로
 # enableServiceLinks, probe 등 일부 공통 Pod 규약은 CNPG 기본 동작을 따른다.
 # ===============================================
-
 apiVersion: postgresql.cnpg.io/v1
 kind: Cluster # 쿠버네티스 Cluster 커스텀 리소스 생성
 metadata:
@@ -135,6 +133,7 @@ spec:
     size: {{ .Values.storage.size }}
 
   # CPU / Memory Request만 지정하고 Limit은 사용하지 않는다.
+  resources:
     requests:
       cpu: 250m
       memory: 320Mi

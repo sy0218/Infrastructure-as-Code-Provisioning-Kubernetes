@@ -1,8 +1,7 @@
 # ===============================================
 # [PostgreSQL LoadBalancer Service]
-#
-# 외부의 DBeaver / psql에서 PostgreSQL에 접속하기 위한 Service.
-# MetalLB가 VIP를 할당하여 <VIP>:5432로 접근할 수 있다.
+#   - 외부의 DBeaver / psql에서 PostgreSQL에 접속하기 위한 Service.
+#   - MetalLB가 VIP를 할당하여 <VIP>:5432로 접근할 수 있다.
 #
 # selector는 현재 Primary Pod만 선택한다.
 # CNPG가 Failover 시 Primary 라벨을 변경하므로

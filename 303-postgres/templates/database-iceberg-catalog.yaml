@@ -1,10 +1,8 @@
 # ===============================================
 # [Iceberg Catalog DB → Database CR]
-#
-# CNPG가 Iceberg Catalog용 빈 DB를 생성한다.
-# 테이블/스키마는 PyIceberg SqlCatalog가 최초 접속 시 자동 생성한다.
+#   - CNPG가 Iceberg Catalog용 빈 DB를 생성한다.
+#     → 테이블/스키마는 PyIceberg SqlCatalog가 최초 접속 시 자동 생성한다.
 # ===============================================
-
 apiVersion: postgresql.cnpg.io/v1
 kind: Database
 
