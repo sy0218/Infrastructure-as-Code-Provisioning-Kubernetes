@@ -14,11 +14,12 @@ Harbor 는 PVC 5개 모두 local-path 라 이 계열이 아니다).
 ## 설치
 
 ```bash
-helm install minio ./301-minio -f values.common.yaml -n data-layer
+helm install minio ./301-minio -f values.common.yaml -n data-layer --timeout 10m   # hook Job 예산(480s)보다 길게
 ```
 
 선행: 100-base(longhorn) · 300-data-layer-base(공용 Secret `data-layer-secrets` 의
-`MINIO_ROOT_USER`/`MINIO_ROOT_PASSWORD`).
+`CDM_OBJSTORE_ACCESS_KEY`/`CDM_OBJSTORE_SECRET_KEY` — 클라이언트가 읽는 이름 하나만 두고, 서버는 이를
+`secretKeyRef` 로 `MINIO_ROOT_USER`/`MINIO_ROOT_PASSWORD` 에 옮겨 받는다).
 
 ## 노드 장애
 
@@ -39,24 +40,31 @@ config/스키마 버킷 용도로는 충분하다.
 
 ## 전환 (완료 — 2026-09-03)
 
-파이프라인의 `MINIO_S3_ENDPOINT`/`CDM_OBJSTORE_ENDPOINT` 는 이 차트의 Service FQDN
+파이프라인의 `CDM_OBJSTORE_ENDPOINT` 는 이 차트의 Service FQDN
 (`values.common.yaml` 의 `global.minioEndpoint` = `http://minio.data-layer.svc.cluster.local:9000`)이다.
 소비자가 전부 파드라 Service DNS 로 충분하고 외부 이름·노드 IP 는 쓰지 않는다. Ansible 에 MinIO
 설치 롤은 없다(구 노드 로컬 설치는 퇴역 — 데이터 이관 없이 아래 '버킷' 으로 새로 시드한다).
 값을 바꾼 뒤에는 `helm upgrade data-layer-base`(ConfigMap 재렌더) + 소비 워크로드 재기동이 따른다.
 
-## 버킷 (차트가 만들지 않는다 — mc 로 한 번 부트스트랩)
+## 버킷 (hook Job 이 만든다 — config 의 설정 시드만 mc 로 한 번)
 
-파이프라인이 전제하는 버킷은 둘이다: `config`(300 의 `CDM_OBJSTORE_BUCKET` — 도메인 설정
-`config/*.yaml` · DQ 규칙 `schemas/raw/*.schema.json` · Avro `schemas/*.avsc`)와 `warehouse`
-(`MINIO_WAREHOUSE_BUCKET`, Iceberg). 레포의 `data_pipeline/config/`·`schemas/` 가 seed 이고
+버킷 이름은 `values.common.yaml` 의 **`global.minioBuckets`** 가 정본이다(`config` → 300 `CDM_OBJSTORE_BUCKET`, `airflowLogs` → 304
+`REMOTE_BASE_LOG_FOLDER` — 같은 global 에서 오므로 어긋날 방법이 없다). hook Job `minio-buckets`(post-install/upgrade)가 그 전부를
+`mc mb -p` 로 만들고, ILM 만료는 이 차트만의 노브라 values `expireDays`(키 = global 키, 현재 `airflowLogs: 30`)에 있다 — global 키에 없는
+키를 적으면 렌더가 실패한다. global 에서 빼도 Job 은 지우지 않는다. Job 은 서버가 뜰 때까지 420s 기다리므로
+`helm install/upgrade` 에 `--timeout 10m` 을 준다(activeDeadlineSeconds 480 > 기본 5m). ILM 은 `rule add`(누적)가 아니라
+`ilm import`(전체 교체)라 재실행해도 규칙이 쌓이지 않는다. Iceberg 데이터 파일은 MinIO 가 아니라 301-hadoop HDFS(`ICEBERG_WAREHOUSE`)에 쓴다 —
+이 차트는 데이터 레이크가 아니다.
+
+`config` 의 내용물(도메인 설정 `config/*.yaml` · DQ 규칙 `schemas/raw/*.schema.json` · Avro `schemas/*.avsc`)은 Job 몫이 아니다.
+레포의 `data_pipeline/config/`·`schemas/` 가 seed 이고
 버킷 안 키는 레포 상대경로 그대로다(`objstore.py` 의 `CONFIG_PREFIX`·`RAW_SCHEMA_PREFIX`).
 없으면 매퍼는 기동을 거부하고 collector DAG 은 "도메인 설정 비어있음" 으로 죽는다 — 조용한 빈 설정을 두지 않는 설계다.
 
 ```bash
 POD=$(kubectl -n data-layer get pod -l app=minio -o jsonpath='{.items[0].metadata.name}')
 kubectl -n data-layer exec $POD -- sh -c 'mc alias set local http://127.0.0.1:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD"'
-kubectl -n data-layer exec $POD -- mc mb -p local/config local/warehouse
+kubectl -n data-layer exec $POD -- mc ls local                     # Job 이 만든 config / airflow-logs 가 보여야 한다
 
 # seed 주입 — 레포 상대경로를 키로 그대로 쓴다. 이미지에 tar 가 없어 kubectl cp 는 안 되므로 mc pipe 로 파일마다 흘려 넣는다.
 cd /project/data_pipeline
@@ -66,14 +74,15 @@ done
 kubectl -n data-layer exec $POD -- mc ls -r local/config          # config/_common.yaml … schemas/raw/… 가 보이면 된다
 ```
 
-- 재실행은 안전하다(`mb -p` 는 있으면 지나가고 `mc pipe` 는 같은 키를 레포 사본으로 덮는다).
+- 재실행은 안전하다(`mc pipe` 는 같은 키를 레포 사본으로 덮는다).
   ⚠ UI(DQ 규칙 편집·objects 화면)로 버킷을 고친 뒤 미러하면 레포 사본이 이긴다 — 레포에 먼저 반영할 것.
-- `warehouse` 는 비어 있어도 된다(cdm_consumer_warehouse 가 no-op).
 
 ## 주의
 
 - `helm uninstall` 은 PVC 까지 지운다 — longhorn reclaimPolicy 가 Delete 라 **버킷
-  데이터가 함께 삭제된다**.
+  데이터가 함께 삭제된다**(재설치 뒤 버킷은 Job 이 다시 만들지만 `config` 시드는 다시 넣어야 한다).
+- hook Job 은 성공하면 스스로 지워지고 실패한 것만 남는다(`kubectl -n data-layer logs job/minio-buckets`) —
+  `helm uninstall` 은 hook 리소스를 지우지 않으므로 실패 Job 이 남아 있으면 `kubectl delete job` 을 함께.
 - 내부 전용이라 웹 콘솔은 `MINIO_BROWSER=off` 로 꺼 뒀다(이 릴리스의 커뮤니티 콘솔은
   어차피 오브젝트 브라우저만 남았다) — 관리 작업은 mc 로 한다(이미지에 동봉).
 - env 는 기본형(envFrom)이 아니라 `secretKeyRef` 로 두 키만 집는 문서화된 예외 —

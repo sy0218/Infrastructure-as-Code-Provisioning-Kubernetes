@@ -3,7 +3,7 @@
 # → 공통값(global.*)은 values.common.yaml에서 관리
 # ===============================================
 
-# MinIO 포트 (내부 전용 — 웹 콘솔은 MINIO_BROWSER=off 로 꺼 둔다)
+# MinIO 포트 (내부 전용 → 웹 콘솔은 MINIO_BROWSER=off 로 꺼 둔다)
 ports:
   api: 9000 # S3 API
 
@@ -23,3 +23,14 @@ storage:
 # → Node 장애 감지 후 60초 뒤 다른 노드에서 재기동
 # → 강제 삭제 정책은 Longhorn에서 관리
 tolerationSeconds: 60
+
+# ===============================================
+# [버킷 ILM 만료]
+#   - 버킷 목록은 global.minioBuckets를 기준으로 관리
+#   - 이 차트에서는 버킷별 ILM 만료 일수만 설정
+#   - 키는 global.minioBuckets와 동일해야 함
+#   - expireDays가 없으면 ILM 정책을 적용하지 않음
+# ===============================================
+
+expireDays:
+  airflowLogs: 30    # Airflow Task 로그: 30일 후 자동 삭제

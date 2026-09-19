@@ -1,0 +1,118 @@
+# ===============================================
+# [버킷 부트스트랩 Job]
+#   - install/upgrade 시 한 번 실행해 global.minioBuckets 전부를 생성 (ILM 만료만 values.expireDays)
+#   - 기존 버킷은 유지하고 삭제하지 않음 (데이터 보호)
+#   - MinIO Ready까지 대기 후 버킷 및 ILM 정책 설정
+#   - post-install/post-upgrade Hook으로 실행되는 일회성 Job
+# ===============================================
+
+{{- /* expireDays 의 키 오타는 렌더 시점에 잡는다 — 조용히 무시되면 만료 없는 로그 버킷이 된다 */}}
+{{- range $k, $_ := .Values.expireDays }}
+{{- if not (hasKey $.Values.global.minioBuckets $k) }}
+{{- fail (printf "301-minio expireDays.%s — global.minioBuckets 에 없는 키다" $k) }}
+{{- end }}
+{{- end }}
+
+apiVersion: batch/v1
+kind: Job
+
+metadata:
+  name: minio-buckets
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: minio-buckets
+    app.kubernetes.io/name: minio
+    app.kubernetes.io/component: buckets
+    app.kubernetes.io/part-of: data-layer
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-weight: "10"
+    # 기존 Job 정리 후 새로 실행하고, 성공한 Job은 삭제
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+
+spec:
+  # 재시작하지 않고 실패 시 Job을 실패 처리
+  backoffLimit: 0
+
+  # Job 전체 최대 실행 시간
+  activeDeadlineSeconds: 480
+
+  template:
+    metadata:
+      labels:
+        app: minio-buckets
+        app.kubernetes.io/name: minio
+        app.kubernetes.io/part-of: data-layer
+
+    spec:
+      restartPolicy: Never
+      enableServiceLinks: false
+
+      containers:
+        - name: buckets
+
+          # MinIO와 동일한 이미지 사용 (mc 포함)
+          image: {{ .Values.global.harborRegistry }}/data-layer/minio:{{ .Values.global.imageTag }}
+          imagePullPolicy: IfNotPresent
+
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              # MinIO Ready까지 최대 420초 대기
+              URL="http://minio.{{ .Values.global.namespace }}.svc.cluster.local:{{ .Values.ports.api }}"
+              END=$(( $(date +%s) + 420 ))
+
+              until mc alias set local "$URL" \
+                "$CDM_OBJSTORE_ACCESS_KEY" \
+                "$CDM_OBJSTORE_SECRET_KEY" >/dev/null 2>&1 \
+                && mc ls local >/dev/null 2>&1; do
+
+                [ "$(date +%s)" -ge "$END" ] && {
+                  echo "minio not ready: $URL — abort"
+                  exit 1
+                }
+
+                echo "waiting minio $URL"
+                sleep 10
+              done
+
+              # 버킷 생성 및 ILM 정책 적용 — 이름은 global.minioBuckets, 만료는 같은 키의 values.expireDays
+              {{- range $key, $name := .Values.global.minioBuckets }}
+              {{- $days := index $.Values.expireDays $key }}
+              mc mb -p "local/{{ $name }}"
+
+              {{- if $days }}
+              # 지정 기간이 지난 오브젝트 자동 삭제 (import = 전체 교체라 재실행해도 규칙이 쌓이지 않는다)
+              printf '%s' '{"Rules":[{"ID":"expire","Status":"Enabled","Filter":{"Prefix":""},"Expiration":{"Days":{{ int $days }}}}]}' \
+                | mc ilm import "local/{{ $name }}"
+              {{- else }}
+              # expireDays가 없으면 기존 ILM 정책 제거
+              if mc ilm export "local/{{ $name }}" >/dev/null 2>&1; then
+                mc ilm rule rm --all --force "local/{{ $name }}"
+              fi
+              {{- end }}
+
+              {{- end }}
+
+              # 최종 버킷 목록 확인
+              mc ls local
+
+          env:
+            # 공용 Secret에서 MinIO 접속 정보 주입
+            - name: CDM_OBJSTORE_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: data-layer-secrets
+                  key: CDM_OBJSTORE_ACCESS_KEY
+
+            - name: CDM_OBJSTORE_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: data-layer-secrets
+                  key: CDM_OBJSTORE_SECRET_KEY
+
+          resources:
+            requests:
+              cpu: "10m"
+              memory: "32Mi"

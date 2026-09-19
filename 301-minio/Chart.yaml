@@ -4,7 +4,7 @@
 # MinIO 단일 인스턴스 → 내부 S3 오브젝트 스토리지
 #
 # 설계
-#   - Deployment(Recreate) 1개 + RWO PVC(Longhorn) + ClusterIP
+#   - Deployment(Recreate) 1개 + RWO PVC(Longhorn) + ClusterIP + 버킷 hook Job
 #   - MinIO는 단일 인스턴스로 운영
 #   - 데이터 복제 및 노드 장애 대응은 Longhorn이 담당
 #   - 노드 장애 시 Pod가 다른 노드로 재기동되고 동일 PVC를 연결

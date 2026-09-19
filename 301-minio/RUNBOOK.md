@@ -169,6 +169,6 @@ http://minio.data-layer.svc.cluster.local:9000
 
 - **디스크가 아니라 노드가 죽는 경우만** 다룬다. Longhorn 디스크 자체의 장애·replica 재구축
   실패는 Longhorn UI 와 `kubectl -n longhorn-system get volumes.longhorn.io` 로 따로 본다.
-- **버킷 부트스트랩**은 별개다 — `config`·`warehouse` 버킷과 설정 시드는 README '버킷' 의 mc 절차로 만든다.
+- **버킷 부트스트랩**은 별개다 — 버킷 자체는 hook Job `minio-buckets` 가 다시 만들지만 `config` 의 설정 시드는 README '버킷' 의 mc 절차로 다시 넣는다.
 - **백업이 아니다.** Longhorn replica 2 는 노드 1대 장애를 견디는 것이지, 실수로 지운 객체를
   되살리지 못한다. 버킷 백업이 필요해지면 별도 수단을 둔다.
