@@ -1,0 +1,39 @@
+# ===============================================
+# [values.yaml → 308-spark 설정]
+# - 공통 설정(global)은 values.common.yaml에서 관리
+# - 이미지·카탈로그 주소·warehouse 는 global 에서 파생
+# ===============================================
+
+# ===============================================
+# [workbench 노드]
+# - nodeAffinity 후보 — global.nodes 에 없는 이름은 렌더 실패
+# - jobs.hostPath 가 후보 노드 전부에 있어야 한다
+# ===============================================
+nodeNames: ["ap", "s1", "s2"]
+
+# ===============================================
+# [PySpark 코드]
+# - 노드 로컬 디렉토리를 읽기 전용 hostPath 로 마운트
+# - 304-airflow repo.hostPath 아래라 304-airflow-rsync 가 3노드에 맞춘다(원본은 ap)
+# ===============================================
+jobs:
+  hostPath: "/project/data_pipeline/data_layer_airflow/spark_jobs"
+  mountPath: "/opt/spark/jobs"
+
+# ===============================================
+# [Iceberg 카탈로그 이름]
+# - iceberg_tables.catalog_name 키 → cdm_consumer_warehouse/iceberg.py 의 SqlCatalog("cdm") 과 같아야 같은 테이블이 보인다
+# ===============================================
+catalog: "cdm"
+
+# ===============================================
+# [executor 기본값]
+# - 잡마다 파드로 뜬다 → 이 값이 파드 requests 가 된다(memory 는 +10% 오버헤드)
+# - spark-submit --conf 로 잡마다 덮어쓸 수 있다
+# ===============================================
+executor:
+  instances: 2
+  cores: 1
+  memory: "2g"
+
+# workbench 리소스 요청은 현재 생략(BestEffort) — 드라이버 힙은 spark.driver.memory 기본 1g

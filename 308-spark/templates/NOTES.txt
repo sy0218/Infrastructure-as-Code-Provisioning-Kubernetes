@@ -1,0 +1,33 @@
+[Spark 작업 창구 배포 완료]
+Release: {{ .Release.Name }}
+Chart  : {{ .Chart.Name }}-{{ .Chart.Version }}
+Image  : {{ .Values.global.harborRegistry }}/data-layer/spark:{{ .Values.global.imageTag }} (workbench · executor 공용)
+
+
+[구성]
+1. spark-workbench       Deployment(1) — 후보 노드 {{ join " " .Values.nodeNames }} (nodeAffinity)
+   - 코드     : {{ .Values.jobs.hostPath }} → {{ .Values.jobs.mountPath }} (읽기 전용 hostPath)
+   - 드라이버는 이 파드, executor 는 잡마다 파드 {{ .Values.executor.instances }}개 (cores {{ .Values.executor.cores }} · memory {{ .Values.executor.memory }})
+2. spark-defaults        ConfigMap — 카탈로그 {{ .Values.catalog }} → jdbc:postgresql://{{ .Values.global.postgres.clusterName }}-rw.{{ .Values.global.namespace }}.svc.cluster.local:{{ .Values.global.postgres.port }}/{{ .Values.global.postgres.databases.icebergCatalog }}
+                                      warehouse → hdfs://{{ .Values.global.hadoop.nameservice }}{{ .Values.global.hadoop.warehouse.path }}
+3. spark-hadoop-config   ConfigMap — HDFS HA 클라이언트 설정 (workbench 마운트 + executor 자동 마운트)
+
+
+[사용]
+kubectl -n {{ .Values.global.namespace }} exec -it deploy/spark-workbench -- spark-sql        # SHOW NAMESPACES IN {{ .Values.catalog }};
+kubectl -n {{ .Values.global.namespace }} exec -it deploy/spark-workbench -- pyspark
+kubectl -n {{ .Values.global.namespace }} exec deploy/spark-workbench -- spark-submit {{ .Values.jobs.mountPath }}/smoke.py
+kubectl -n {{ .Values.global.namespace }} get pod -l spark-role=executor -w                 # 잡 도는 동안만 보인다
+
+
+[배포 전제]
+- 300-data-layer-base : Namespace · Secret {{ .Values.global.postgres.clusterName }}-app-user · ClusterRoleBinding(executor 파드 생성 권한)
+- 301-hadoop · 303-postgres : {{ .Values.global.hadoop.warehouse.path }} 디렉토리 · {{ .Values.global.postgres.databases.icebergCatalog }} DB
+- {{ .Values.jobs.hostPath }} 가 후보 노드 전부에 있을 것 (ap 에 만들면 304-airflow-rsync 가 맞춘다)
+- Harbor : spark:{{ .Values.global.imageTag }} (build_and_push.sh <TAG> spark)
+
+
+[운영 주의]
+- 설정 변경은 values → helm upgrade (checksum 으로 workbench 재생성 — 열려 있던 exec 세션은 끊긴다)
+- exec 세션이 끊기면 드라이버와 executor 가 함께 정리된다 — 긴 잡은 nohup
+- helm uninstall 은 안전하다 — 노드의 코드는 남고 창구만 사라진다

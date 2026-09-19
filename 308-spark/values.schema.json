@@ -1,0 +1,234 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "spark values",
+  "description": "필수 키 누락·오타·형식 오류를 렌더(lint/template/install) 시점에 잡는다. 이 차트가 global 에서 실제로 참조하는 키만 required 로 선언한다(values.common.yaml 을 -f 로 주지 않으면 렌더 전에 실패). global 에는 다른 차트용 키도 함께 들어오므로 additionalProperties 를 막지 않는다.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "global",
+    "nodeNames",
+    "jobs",
+    "catalog",
+    "executor"
+  ],
+  "properties": {
+    "global": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "namespace",
+        "harborRegistry",
+        "imageTag",
+        "nodes",
+        "hadoop",
+        "postgres"
+      ],
+      "properties": {
+        "namespace": {
+          "type": "string",
+          "description": "RFC 1123 라벨 — 소문자/숫자/하이픈만. 소유자는 300-data-layer-base",
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "maxLength": 63
+        },
+        "harborRegistry": {
+          "type": "string",
+          "description": "스킴 없는 레지스트리 주소 — 밑줄 금지(Docker 이미지 참조 파서의 domain 규칙)",
+          "pattern": "^[a-z0-9]([-.a-z0-9]*[a-z0-9])?(:[0-9]+)?$"
+        },
+        "imageTag": {
+          "type": "string",
+          "description": "spark 이미지 태그 — build_and_push.sh 에 넘긴 값과 같아야 한다. workbench 와 executor 파드가 같은 태그를 쓴다",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+        },
+        "nodes": {
+          "type": "array",
+          "description": "노드 이름·IP 표 — NameNode 주소(hdfs-site.xml)와 nodeNames 실존 검사가 여기서 나온다",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "ip"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "ip": {
+                "type": "string",
+                "pattern": "^[0-9]{1,3}(\\.[0-9]{1,3}){3}$"
+              }
+            }
+          }
+        },
+        "hadoop": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": [
+            "nameservice",
+            "ports",
+            "namenode",
+            "warehouse"
+          ],
+          "properties": {
+            "nameservice": {
+              "type": "string",
+              "description": "HDFS HA 논리 이름 — fs.defaultFS 와 warehouse 주소의 호스트 자리",
+              "minLength": 1
+            },
+            "ports": {
+              "type": "object",
+              "additionalProperties": true,
+              "required": [
+                "namenodeRpc"
+              ],
+              "properties": {
+                "namenodeRpc": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 65535
+                }
+              }
+            },
+            "namenode": {
+              "type": "object",
+              "additionalProperties": true,
+              "required": [
+                "nodeNames"
+              ],
+              "properties": {
+                "nodeNames": {
+                  "type": "array",
+                  "description": "NameNode 노드 — 순서가 nn0, nn1 이 된다(301-hadoop 과 같은 원본)",
+                  "minItems": 1,
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              }
+            },
+            "warehouse": {
+              "type": "object",
+              "additionalProperties": true,
+              "required": [
+                "path",
+                "user"
+              ],
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "description": "Iceberg 데이터 파일 루트 — 301-hadoop hook Job 이 이 사용자 소유로 만든다",
+                  "pattern": "^/"
+                },
+                "user": {
+                  "type": "string",
+                  "description": "HDFS 실행 사용자(HADOOP_USER_NAME) — workbench 와 executor 둘 다",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        },
+        "postgres": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": [
+            "clusterName",
+            "port",
+            "databases"
+          ],
+          "properties": {
+            "clusterName": {
+              "type": "string",
+              "description": "CNPG Cluster 이름 — -rw Service 와 <clusterName>-app-user Secret 이름의 어근",
+              "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+            },
+            "port": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535
+            },
+            "databases": {
+              "type": "object",
+              "additionalProperties": true,
+              "required": [
+                "icebergCatalog"
+              ],
+              "properties": {
+                "icebergCatalog": {
+                  "type": "string",
+                  "description": "Iceberg JDBC 카탈로그 DB — 303-postgres Database CR 이 만든다",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "nodeNames": {
+      "type": "array",
+      "description": "workbench 후보 노드 — nodeAffinity In. global.nodes 에 없는 이름은 렌더 실패(아니면 Pending 으로 조용히 멈춘다). jobs.hostPath 가 전부에 있어야 한다",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "jobs": {
+      "type": "object",
+      "description": "키 오타가 조용히 기본값으로 남지 않도록 추가 키를 막는다",
+      "additionalProperties": false,
+      "required": [
+        "hostPath",
+        "mountPath"
+      ],
+      "properties": {
+        "hostPath": {
+          "type": "string",
+          "description": "노드 로컬 PySpark 코드 디렉토리 절대 경로(끝 / 없음) — hostPath type Directory 라 없는 노드에서는 파드가 뜨지 않는다. 304-airflow repo.hostPath 아래여야 rsync 가 맞춘다",
+          "pattern": "^/[^\\s]*[^\\s/]$"
+        },
+        "mountPath": {
+          "type": "string",
+          "description": "파드 안 경로 — spark-submit 에 주는 경로",
+          "pattern": "^/[^\\s]*[^\\s/]$"
+        }
+      }
+    },
+    "catalog": {
+      "type": "string",
+      "description": "Spark 카탈로그 이름 = iceberg_tables.catalog_name — cdm_consumer_warehouse/iceberg.py 의 SqlCatalog 이름과 같아야 한다",
+      "pattern": "^[a-z][a-z0-9_]*$"
+    },
+    "executor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "instances",
+        "cores",
+        "memory"
+      ],
+      "properties": {
+        "instances": {
+          "type": "integer",
+          "description": "기본 executor 파드 수 — 잡마다 --conf spark.executor.instances 로 덮어쓴다",
+          "minimum": 1
+        },
+        "cores": {
+          "type": "integer",
+          "description": "executor 당 CPU — 파드 cpu request 가 된다",
+          "minimum": 1
+        },
+        "memory": {
+          "type": "string",
+          "description": "executor 힙 — 파드 memory request 는 여기에 오버헤드(10%, 최소 384m)를 더한 값",
+          "pattern": "^[0-9]+[gGmM]$"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,52 @@
+# ===============================================
+# [HDFS 클라이언트 ConfigMap]
+# - workbench(드라이버)와 executor 파드에 HDFS HA 접속 설정 제공
+#   · workbench : /etc/hadoop/conf 마운트 + HADOOP_CONF_DIR
+#   · executor  : spark.kubernetes.hadoop.configMapName 이 같은 ConfigMap 을 마운트한다
+# - 301-hadoop 과 동일한 global.hadoop 값 → 307 hdfs-client-config 와 같은 내용, 릴리스가 달라 사본을 소유한다
+# ===============================================
+
+{{- $ns := .Values.global.hadoop.nameservice }}
+{{- $rpc := int .Values.global.hadoop.ports.namenodeRpc }}
+{{- $ids := list }}
+{{- range $i, $n := .Values.global.hadoop.namenode.nodeNames }}{{ $ids = append $ids (printf "nn%d" $i) }}{{ end }}
+
+apiVersion: v1
+kind: ConfigMap
+
+metadata:
+  name: spark-hadoop-config
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app.kubernetes.io/name: spark
+    app.kubernetes.io/component: hadoop-config
+    app.kubernetes.io/part-of: data-layer
+
+data:
+  # HDFS 기본 경로 → HA nameservice 사용
+  core-site.xml: |
+    <?xml version="1.0" encoding="UTF-8"?>
+    <configuration>
+      <property><name>fs.defaultFS</name><value>hdfs://{{ $ns }}</value></property>
+    </configuration>
+
+  # NameNode HA 접속 정보
+  hdfs-site.xml: |
+    <?xml version="1.0" encoding="UTF-8"?>
+    <configuration>
+      <property><name>dfs.nameservices</name><value>{{ $ns }}</value></property>
+      <property><name>dfs.ha.namenodes.{{ $ns }}</name><value>{{ join "," $ids }}</value></property>
+
+      {{- range $i, $n := .Values.global.hadoop.namenode.nodeNames }}
+      <property>
+        <name>dfs.namenode.rpc-address.{{ $ns }}.nn{{ $i }}</name>
+        <value>{{ include "spark.nodeIp" (dict "root" $ "name" $n) }}:{{ $rpc }}</value>
+      </property>
+      {{- end }}
+
+      # HA 장애 전환용 클라이언트 Provider
+      <property>
+        <name>dfs.client.failover.proxy.provider.{{ $ns }}</name>
+        <value>org.apache.hadoop.hdfs.server.namenode.ha.ConfiguredFailoverProxyProvider</value>
+      </property>
+    </configuration>

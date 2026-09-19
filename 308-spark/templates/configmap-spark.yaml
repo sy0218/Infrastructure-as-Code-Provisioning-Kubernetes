@@ -1,0 +1,43 @@
+# ===============================================
+# [spark-defaults ConfigMap]
+# - 모든 CLI(spark-sql · pyspark · spark-submit)가 읽는 기본값 — 접속 주소는 값이 아니라 global 파생
+# - 파드마다 다른 값(드라이버 주소·파드 이름)과 DB 계정은 여기 없다 → workbench 기동 스크립트가 사본에 덧붙인다
+# ===============================================
+
+{{- $ns := .Values.global.namespace }}
+{{- $pg := .Values.global.postgres }}
+{{- $cat := .Values.catalog }}
+
+apiVersion: v1
+kind: ConfigMap
+
+metadata:
+  name: spark-defaults
+  namespace: {{ $ns }}
+  labels:
+    app.kubernetes.io/name: spark
+    app.kubernetes.io/component: spark-defaults
+    app.kubernetes.io/part-of: data-layer
+
+data:
+  spark-defaults.conf: |
+    # executor 는 이 네임스페이스에 파드로 뜬다 (권한: data-layer 기본 SA = cluster-admin, 300 소유)
+    spark.master                                              k8s://https://kubernetes.default.svc:443
+    spark.kubernetes.namespace                                {{ $ns }}
+    spark.kubernetes.container.image                          {{ .Values.global.harborRegistry }}/data-layer/spark:{{ .Values.global.imageTag }}
+    spark.kubernetes.container.image.pullPolicy               IfNotPresent
+    spark.kubernetes.executor.label.app.kubernetes.io/part-of data-layer
+    spark.executor.instances                                  {{ int .Values.executor.instances }}
+    spark.executor.cores                                      {{ int .Values.executor.cores }}
+    spark.executor.memory                                     {{ .Values.executor.memory }}
+
+    # HDFS HA — executor 파드에 spark-hadoop-config 를 마운트하고 HADOOP_CONF_DIR 를 잡는다
+    spark.kubernetes.hadoop.configMapName                     spark-hadoop-config
+    spark.executorEnv.HADOOP_USER_NAME                        {{ .Values.global.hadoop.warehouse.user }}
+
+    # Iceberg — 카탈로그는 303-postgres JDBC, 데이터 파일은 301-hadoop HDFS (307 warehouse 컨슈머와 같은 곳)
+    spark.sql.extensions                                      org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions
+    spark.sql.catalog.{{ $cat }}                              org.apache.iceberg.spark.SparkCatalog
+    spark.sql.catalog.{{ $cat }}.type                         jdbc
+    spark.sql.catalog.{{ $cat }}.uri                          jdbc:postgresql://{{ $pg.clusterName }}-rw.{{ $ns }}.svc.cluster.local:{{ int $pg.port }}/{{ $pg.databases.icebergCatalog }}
+    spark.sql.catalog.{{ $cat }}.warehouse                    hdfs://{{ .Values.global.hadoop.nameservice }}{{ .Values.global.hadoop.warehouse.path }}
