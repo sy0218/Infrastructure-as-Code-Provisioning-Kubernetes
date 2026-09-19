@@ -1,0 +1,24 @@
+# ===================================================
+# [304-airflow-rsync]
+#
+# Airflow DAG/코드 디렉토리를 노드 간 동기화하는 차트
+# - 원본 노드 변경 감지(inotify) → 대상 노드에 rsync
+# - 주기적 전체 동기화로 누락된 변경·노드 복귀 시에도 정합성 보장
+#
+# 설계
+# - 기존 Ansible sync 작업을 상시 Sync Pod로 전환
+# - 공유 스토리지 없이 각 워커가 로컬 디렉토리를 사용
+# - 원본 노드의 기존 root SSH 키(hostPath)를 사용
+#
+# 의존성
+# - 300-data-layer-base: Namespace 제공
+# - Ansible airflow_repo_prereq(all): 노드 디렉토리 최초 생성
+# - 304-airflow와 독립적으로 배포 가능
+# ===================================================
+apiVersion: v2
+name: airflow-rsync
+description: "Airflow DAG/코드 동기화 → 원본 노드 변경 감지(inotify) + 대상 노드 rsync 를 수행하는 Sync Pod(Deployment) + 스크립트 ConfigMap"
+type: application
+
+# Chart 버전 (업그레이드 시 명시적으로 변경)
+version: 0.1.0

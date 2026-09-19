@@ -1,0 +1,45 @@
+[Airflow DAG 동기화 배포 완료]
+Release: {{ .Release.Name }}
+Chart  : {{ .Chart.Name }}-{{ .Chart.Version }}
+Image  : {{ .Values.global.harborRegistry }}/data-layer/rsync:{{ .Values.global.imageTag }}
+
+
+[구성]
+1. airflow-rsync   Deployment(1) — {{ .Values.source.nodeName }} 노드 고정(nodeAffinity)
+   - 원본   : {{ .Values.repoPath }} (읽기 전용 hostPath)
+   - 대상   : {{ join " " .Values.targets.nodeNames }} → {{ include "airflowRsync.targetIps" . }} (같은 경로)
+   - 감지   : inotify → {{ .Values.sync.debounceSeconds }}초 묶음 → rsync
+   - 안전망 : 이벤트가 없어도 {{ .Values.sync.intervalSeconds }}초마다 전체 동기화
+
+2. airflow-rsync-script   ConfigMap (sync.sh)
+   - 스크립트 변경 → checksum/script → helm upgrade 만으로 롤아웃
+
+
+[흐름]
+DAG 수정 ({{ .Values.source.nodeName }}:{{ .Values.repoPath }})
+      ↓ inotify
+airflow-rsync Pod
+      ↓ rsync over ssh ({{ .Values.ssh.user }}@<node ip>)
+{{ join " · " .Values.targets.nodeNames }} : {{ .Values.repoPath }}
+      ↓
+304-airflow dag-processor 재스캔 (dagRefreshInterval)
+
+
+[배포 전제]
+- 300-data-layer-base : Namespace
+- Ansible airflow_repo_prereq all : 노드 디렉토리 {{ .Values.repoPath }} (최초 1회 — 이후 sync 태그는 이 파드가 대신한다)
+- {{ .Values.source.nodeName }} 의 {{ .Values.ssh.keyHostPath }} 로 {{ .Values.ssh.user }}@<대상 노드> 비대화형 SSH 가 열려 있을 것
+- Harbor : rsync:{{ .Values.global.imageTag }} (build_and_push.sh <TAG> rsync)
+
+
+[확인]
+kubectl -n {{ .Values.global.namespace }} get pod -l app=airflow-rsync -o wide   # NODE = {{ .Values.source.nodeName }}, READY 1/1 = 전 노드 동기화 성공
+kubectl -n {{ .Values.global.namespace }} logs deploy/airflow-rsync --tail=20    # 노드별 ok / FAIL
+
+
+[운영 주의]
+- READY 0/1 = 마지막 동기화가 한 노드 이상에서 실패 — 로그의 FAIL <ip> 를 본다(노드 다운 · SSH 키 · authorized_keys)
+- 한 노드라도 실패한 채로는 파서와 워커가 다른 코드를 볼 수 있다 — 복구되면 다음 주기에 스스로 따라잡는다
+- rsync 옵션(--delete · --delay-updates · --chmod)은 values 가 아니라 스크립트 고정이다 — 빼면 DAG 이 잠깐 사라지거나 uid 50000 이 못 읽는다
+- 노드를 늘리면 global.nodes 와 targets.nodeNames 에 추가 후 helm upgrade (그 노드의 디렉토리는 Ansible all 로 먼저)
+- helm uninstall 은 안전하다 — 노드의 코드는 그대로 남고 동기화만 멈춘다

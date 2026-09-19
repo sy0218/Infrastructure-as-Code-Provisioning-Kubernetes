@@ -1,0 +1,156 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "airflow-rsync values",
+  "description": "필수 키 누락·오타·형식 오류를 렌더(lint/template/install) 시점에 잡는다. 이 차트가 global 에서 실제로 참조하는 키만 required 로 선언한다(values.common.yaml 을 -f 로 주지 않으면 렌더 전에 실패). global 에는 다른 차트용 키도 함께 들어오므로 additionalProperties 를 막지 않는다.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "global",
+    "source",
+    "repoPath",
+    "targets",
+    "ssh",
+    "sync"
+  ],
+  "properties": {
+    "global": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "namespace",
+        "harborRegistry",
+        "imageTag",
+        "nodes"
+      ],
+      "properties": {
+        "namespace": {
+          "type": "string",
+          "description": "RFC 1123 라벨 — 소문자/숫자/하이픈만. 소유자는 300-data-layer-base",
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "maxLength": 63
+        },
+        "harborRegistry": {
+          "type": "string",
+          "description": "스킴 없는 레지스트리 주소 — 밑줄 금지(Docker 이미지 참조 파서의 domain 규칙)",
+          "pattern": "^[a-z0-9]([-.a-z0-9]*[a-z0-9])?(:[0-9]+)?$"
+        },
+        "imageTag": {
+          "type": "string",
+          "description": "rsync 이미지 태그 — build_and_push.sh 에 넘긴 값과 같아야 한다(공용 태그라 다른 차트와 함께 올린다)",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+        },
+        "nodes": {
+          "type": "array",
+          "description": "노드 이름·IP 표 — targets.nodeNames 의 IP 와 source.nodeName 의 실존 검사가 여기서 나온다(Ansible host.yml 의 ansible_host 와 같은 커밋 규칙)",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "ip"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "ip": {
+                "type": "string",
+                "pattern": "^[0-9]{1,3}(\\.[0-9]{1,3}){3}$"
+              }
+            }
+          }
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "description": "키 오타가 조용히 기본값으로 남지 않도록 추가 키를 막는다",
+      "additionalProperties": false,
+      "required": [
+        "nodeName"
+      ],
+      "properties": {
+        "nodeName": {
+          "type": "string",
+          "description": "원본이 있는 노드 — nodeAffinity 로 고정된다. global.nodes 에 없는 이름은 렌더가 막는다(아니면 Pending 으로 조용히 멈춘다)",
+          "minLength": 1
+        }
+      }
+    },
+    "repoPath": {
+      "type": "string",
+      "description": "노드 로컬 DAG/코드 디렉토리의 절대 경로(끝 / 없음 — 스크립트가 붙인다). 원본과 사본이 같은 경로다. 304-airflow repo.hostPath · Ansible airflow_repo_dir 와 글자 그대로 같아야 한다",
+      "pattern": "^/[^\\s]*[^\\s/]$"
+    },
+    "targets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "nodeNames"
+      ],
+      "properties": {
+        "nodeNames": {
+          "type": "array",
+          "description": "rsync 대상 노드 이름 — IP 는 global.nodes 에서 찾는다(없는 이름은 렌더 실패). 빈 목록이면 파드가 아무것도 안 하므로 막는다",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "ssh": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "user",
+        "keyHostPath"
+      ],
+      "properties": {
+        "user": {
+          "type": "string",
+          "description": "대상 노드 접속 계정 — --archive 가 소유권을 그대로 옮기려면 root 여야 한다",
+          "pattern": "^[a-z_][a-z0-9_-]*$"
+        },
+        "keyHostPath": {
+          "type": "string",
+          "description": "원본 노드의 개인키 절대 경로 — hostPath type File 이라 없으면 파드가 뜨지 않는다",
+          "pattern": "^/[^\\s]+$"
+        }
+      }
+    },
+    "sync": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "debounceSeconds",
+        "intervalSeconds",
+        "excludes"
+      ],
+      "properties": {
+        "debounceSeconds": {
+          "type": "integer",
+          "description": "변경 감지 뒤 rsync 까지의 대기(초) — 0 이면 저장 한 번에 rsync 가 여러 번 돈다",
+          "minimum": 0
+        },
+        "intervalSeconds": {
+          "type": "integer",
+          "description": "이벤트 없이도 전체를 다시 맞추는 주기(초) — 0 은 inotifywait 가 무한 대기라 막는다",
+          "minimum": 5
+        },
+        "excludes": {
+          "type": "array",
+          "description": "rsync --exclude 패턴 — 공백으로 이어 env 로 넘기므로 패턴 안에 공백이 올 수 없다",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^\\S+$"
+          }
+        }
+      }
+    }
+  }
+}

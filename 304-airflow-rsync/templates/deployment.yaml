@@ -1,0 +1,154 @@
+# ===============================================
+# [Sync Pod → Deployment]
+# - 원본 노드에 Sync Pod 1개만 실행
+# - 원본 hostPath를 감시하고 변경 시 대상 노드에 rsync
+# - 대상 IP는 global.nodes에서 자동 조회
+#
+# source(ap) ── inotify ──▶ sync.sh ── rsync/SSH ──▶ s1 · s2
+# ===============================================
+
+# 원본 노드가 global.nodes에 없으면 Helm 렌더 단계에서 실패
+{{- $_ := include "airflowRsync.nodeIp" (dict "name" .Values.source.nodeName "nodes" .Values.global.nodes) }}
+
+apiVersion: apps/v1
+kind: Deployment
+
+metadata:
+  name: airflow-rsync
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: airflow-rsync
+    app.kubernetes.io/name: airflow-rsync
+    app.kubernetes.io/part-of: data-layer
+
+spec:
+  # 원본을 감시하는 단일 Pod
+  replicas: 1
+
+  # 교체 시 기존 Pod 종료 후 새 Pod 생성
+  strategy:
+    type: Recreate
+
+  selector:
+    matchLabels:
+      app: airflow-rsync
+
+  template:
+    metadata:
+      annotations:
+        # 스크립트 변경 시 Helm upgrade만으로 Pod 재생성
+        checksum/script: {{ include (print $.Template.BasePath "/configmap-sync-script.yaml") . | sha256sum }}
+
+      labels:
+        app: airflow-rsync
+        app.kubernetes.io/name: airflow-rsync
+        app.kubernetes.io/part-of: data-layer
+
+    spec:
+      # hostPath 원본이 있는 노드에서만 실행
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values:
+                      - {{ .Values.source.nodeName | quote }}
+
+      # 불필요한 Service 환경변수 주입 방지
+      enableServiceLinks: false
+
+      containers:
+        - name: rsync
+
+          image: {{ .Values.global.harborRegistry }}/data-layer/rsync:{{ .Values.global.imageTag }}
+          imagePullPolicy: IfNotPresent
+
+          # ConfigMap 스크립트 실행
+          command: ["/bin/sh", "/scripts/sync.sh"]
+
+          # root: SSH 개인키 읽기 + rsync 파일 권한/소유권 처리
+          securityContext:
+            runAsUser: 0
+
+          # 동기화 대상·주기·제외 목록을 values에서 주입
+          env:
+            - name: REPO_PATH
+              value: {{ .Values.repoPath | quote }}
+
+            - name: TARGETS
+              value: {{ include "airflowRsync.targetIps" . | quote }}
+
+            - name: SSH_USER
+              value: {{ .Values.ssh.user | quote }}
+
+            - name: INTERVAL
+              value: {{ .Values.sync.intervalSeconds | quote }}
+
+            - name: DEBOUNCE
+              value: {{ .Values.sync.debounceSeconds | quote }}
+
+            - name: EXCLUDES
+              value: {{ join " " .Values.sync.excludes | quote }}
+
+          # Sync 루프가 멈추면 Pod 재시작
+          livenessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - 'test $(( $(date +%s) - $(stat -c %Y /tmp/heartbeat) )) -lt {{ add (mul 2 (int .Values.sync.intervalSeconds)) 300 }}'
+            initialDelaySeconds: 60
+            periodSeconds: 60
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          # 모든 대상 노드와 동기화된 경우에만 Ready
+          readinessProbe:
+            exec:
+              command: ["/bin/sh", "-c", "test -f /tmp/in-sync"]
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 1
+
+          # CPU/메모리 요청은 현재 생략
+          # → BestEffort QoS, 메모리 압박 시 eviction 우선순위가 낮음
+          # resources:
+          #   requests:
+          #     cpu: "10m"
+          #     memory: "32Mi"
+
+          volumeMounts:
+            # 동기화 스크립트
+            - name: script
+              mountPath: /scripts
+              readOnly: true
+
+            # 원본 DAG/코드 디렉토리
+            - name: repo
+              mountPath: {{ .Values.repoPath | quote }}
+              readOnly: true
+
+            # 원본 노드의 SSH 개인키
+            - name: ssh-key
+              mountPath: /ssh/key
+              readOnly: true
+
+      volumes:
+        # ConfigMap → sync.sh
+        - name: script
+          configMap:
+            name: airflow-rsync-script
+
+        # 원본 노드의 로컬 DAG/코드 디렉토리
+        - name: repo
+          hostPath:
+            path: {{ .Values.repoPath | quote }}
+            type: Directory
+
+        # 기존 root SSH 개인키
+        - name: ssh-key
+          hostPath:
+            path: {{ .Values.ssh.keyHostPath | quote }}
+            type: File

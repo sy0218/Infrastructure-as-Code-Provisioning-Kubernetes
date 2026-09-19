@@ -1,0 +1,107 @@
+# ===============================================
+# [동기화 스크립트 ConfigMap]
+# - Sync Pod가 실행하는 sync.sh
+# - 스크립트 변경 시 이미지 재빌드 없이 Helm upgrade로 반영
+# - rsync 옵션은 데이터 정합성을 위해 스크립트에 고정
+# ===============================================
+
+apiVersion: v1
+kind: ConfigMap
+
+metadata:
+  name: airflow-rsync-script
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: airflow-rsync
+    app.kubernetes.io/name: airflow-rsync
+    app.kubernetes.io/part-of: data-layer
+
+data:
+  sync.sh: |
+    #!/bin/sh
+
+    # 원본 디렉토리 변경 감지 → 모든 대상 노드에 동기화
+    # REPO_PATH / TARGETS / SSH_USER / INTERVAL / DEBOUNCE / EXCLUDES는 Deployment에서 주입
+    set -u
+    set -f
+
+    # 원본 노드의 기존 SSH 키 사용
+    SSH="ssh -i /ssh/key -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/tmp/known_hosts -o ConnectTimeout=10"
+
+    # 안전한 파일 교체 + DAG 읽기 권한 보장 + 대상 장애 시 타임아웃
+    RSYNC="rsync --archive --delete --delay-updates --delete-delay --chmod=Da+rx,Fa+r --timeout=60"
+
+    for p in $EXCLUDES; do
+      RSYNC="$RSYNC --exclude=$p"
+    done
+
+    log() {
+      echo "$(date '+%Y-%m-%dT%H:%M:%S') $*"
+    }
+
+    sync_all() {
+
+      # 원본 마운트 이상 시 --delete 실행을 막아 전체 코드 삭제 방지
+      if [ ! -d "$REPO_PATH/dags" ]; then
+        log "SKIP $REPO_PATH/dags 가 없다"
+        rm -f /tmp/in-sync
+        return 1
+      fi
+
+      ok=1
+
+      # 모든 대상 노드에 순차 동기화
+      for ip in $TARGETS; do
+        if $RSYNC -e "$SSH" "$REPO_PATH/" "$SSH_USER@$ip:$REPO_PATH/"; then
+          log "OK   $ip"
+        else
+          log "FAIL $ip"
+          ok=0
+        fi
+      done
+
+      # 모든 대상 성공 시에만 Ready
+      if [ "$ok" = 1 ]; then
+        touch /tmp/in-sync
+      else
+        rm -f /tmp/in-sync
+      fi
+
+      [ "$ok" = 1 ]
+    }
+
+    log "source=$REPO_PATH targets=[$TARGETS] interval=${INTERVAL}s debounce=${DEBOUNCE}s"
+
+    touch /tmp/heartbeat
+
+    # Pod 시작 시 전체 동기화
+    sync_all
+
+    while :; do
+
+      # livenessProbe용 heartbeat
+      touch /tmp/heartbeat
+
+      # 변경 감지 또는 주기 만료까지 대기
+      inotifywait -r -qq -t "$INTERVAL" \
+        -e close_write,create,delete,move,attrib "$REPO_PATH"
+
+      case $? in
+        # 변경 발생 → 짧게 기다린 후 한 번에 동기화
+        0)
+          sleep "$DEBOUNCE"
+          ;;
+
+        # 변경 없음 → 주기적 전체 동기화
+        2)
+          ;;
+
+        # inotify 오류 → 주기적 동기화로 계속 운영
+        *)
+          log "inotifywait 실패 — ${INTERVAL}s 주기 동기화"
+          sleep "$INTERVAL"
+          ;;
+      esac
+
+      sync_all
+    done
