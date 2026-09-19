@@ -14,6 +14,8 @@ Chart  : {{ .Chart.Name }}-{{ .Chart.Version }}
    - Topic: {{ len .Values.topics }}개 자동 생성
    - Replication Factor: {{ .Values.global.kafka.replicationFactor }}
    - Bootstrap: {{ include "kafka.bootstrap" . }}
+   - 설정 ConfigMap: {{ .Values.global.kafka.name }}-config / {{ .Values.global.kafka.name }}-jmx-exporter
+     (같은 릴리스 → 파드 템플릿 checksum, OnDelete 라 반영은 롤링 재기동)
 
 2. Schema Registry
    - Kafka 메시지 Schema 관리

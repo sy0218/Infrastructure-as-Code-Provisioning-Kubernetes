@@ -1,8 +1,7 @@
 # ===============================================
 # [Kafka StorageClass → 정적 Local PV]
-#
-# 이 StorageClass는 동적 PV 생성 없이
-# kafka-persistentvolumes.yaml에서 미리 만든 Local PV를 사용한다.
+#   - 이 StorageClass는 동적 PV 생성 없이
+#     → kafka-persistentvolumes.yaml에서 미리 만든 Local PV를 사용한다.
 #
 # - no-provisioner → PV를 자동 생성하지 않음
 # - WaitForFirstConsumer → Pod 스케줄링 시점에 PV 바인딩

@@ -2,14 +2,16 @@
 
 **Kafka 클러스터(StatefulSet) + 운영 도구 3종.** 구 `301-kafka-tools` 를 개명·통합했고, 브로커는 구 Ansible
 systemd 설치(ADR 0)를 K8s 로 그대로 옮긴 것이다 — **오퍼레이터를 쓰지 않는다.** 브로커는 노드에 박힌 인프라이고
-쿠버네티스는 실행기다. 네임스페이스·공용 ConfigMap/Secret **과 이 차트의 설정 ConfigMap
-(`kafka-config`·`kafka-jmx-exporter`)** 은 300-data-layer-base 가, 노드 디렉토리는 Ansible
-`kafka_prereq` 가 소유하고, 이 차트는 **StatefulSet·정적 PV·설정·토픽 Job·도구 3종**을 소유한다.
+쿠버네티스는 실행기다. 네임스페이스·공용 ConfigMap/Secret 은 300-data-layer-base 가, 노드 디렉토리는 Ansible
+`kafka_prereq` 가 소유하고, 이 차트는 **StatefulSet·정적 PV·설정 ConfigMap 2종(`kafka-config`·`kafka-jmx-exporter`)·
+토픽 Job·도구 3종**을 소유한다.
 추후 ArgoCD app-of-apps 에서는 sync-wave 1 (300 다음)이다.
 
 | 오브젝트 | 이름 | 역할 |
 |---|---|---|
 | StatefulSet | `kafka` (파드 `kafka-0..2`) | KRaft 브로커 3 — 앞 `controllers`(3)개는 controller+broker 겸용. **hostNetwork**, `updateStrategy: OnDelete` |
+| ConfigMap | `kafka-config` | `server.properties.tpl` — 공통값은 `global.kafka` 에서 렌더, 파드별 값(node.id·roles·광고 IP)은 기동 스크립트가 치환. 파드 템플릿 `checksum/kafka-config` |
+| ConfigMap | `kafka-jmx-exporter` | 브로커 javaagent 의 `config.yaml` (`files/jmx-exporter.yaml` — 수집 MBean·변환 규칙). 파드 템플릿 `checksum/kafka-jmx` |
 | StorageClass | `kafka-local` | 프로비저너 없음, `WaitForFirstConsumer`, `Retain` — 정적 local PV 전용 |
 | PersistentVolume ×2N | `kafka-{data,metadata}-<노드>` | `/data/kafka-broker`(10Gi, log.dirs) · `/data/kafka-controller`(2Gi, metadata.log.dir). **`claimRef` 로 PVC `data-kafka-N` 에 미리 묶여** kafka-N ↔ brokers[N] 고정 |
 | Job (helm hook) | `kafka-topics` | 파이프라인 계약 토픽 16개 `--if-not-exists` (파티션 3 / RF 3) — 구 `kafka_topics` 롤 승계 |
@@ -50,11 +52,13 @@ kafka-0          kafka-1          kafka-2        ← 브로커 ID = 파드 ordin
 
 - `global.*` 은 **이 차트에 없다** — 저장소 루트 `values.common.yaml` 이 유일한 정의처다(`-f values.common.yaml`).
   여기서 쓰는 것은 `namespace` · `harborRegistry` · `imageTag`(브로커와 도구 3종이 같은 태그) ·
-  `ingressClassName` · **`nodes` 표** · `kafka.ports.*` · `kafka.schemaRegistryPort` · `hosts.kafkaUi` 다.
+  `ingressClassName` · **`nodes` 표** · `kafka.ports.*` · `kafka.schemaRegistryPort` · `hosts.kafkaUi` 와
+  `server.properties` 가 렌더하는 `kafka.{name,controllers,replicationFactor,minInsyncReplicas,numPartitions,data,metadata}` 다
+  (뒤쪽 묶음은 이제 이 차트만 읽지만 `values.common.yaml` 에 남아 있다).
 - **`nodes` 표와 브로커 포트가 공통값인 이유**: 노드 표는 300 이 `KAFKA_BOOTSTRAP` 조립에 그대로 쓰고,
   브로커는 hostNetwork 라 포트가 곧 노드 포트(클러스터 전역 사실)다.
-- `kafka.*` — 이 차트 소유: `name`(StatefulSet·파드·설정 ConfigMap 이름) · `clusterId`(KRaft, 디스크에 각인) · `imageName` ·
-  `controllers` · `storageClass` · `data/metadata.{path,size}` · `heap` · `resources` · 복제 기본값 · `terminationGracePeriodSeconds`.
+- `kafka.*`(차트 values) — 이 차트만 쓰는 값: `clusterId`(KRaft, 디스크에 각인) · `imageName` · `storageClass` · `heap` ·
+  `resources` · `terminationGracePeriodSeconds`.
 - `topics` — 토픽 Job 목록. 빼도 토픽은 지워지지 않는다(삭제는 수동).
 - 나머지 최상위 키 — 도구 3종 중 이 차트만 쓰는 값(`schemaRegistryReplicas`·`kafkaUiPort`·`kafkaExporterPort`).
 - `values.schema.json` 이 필수 키·형식(노드 3 이상·중복 금지, IP 형식, `controllers` 3|5, 경로 절대경로, requests-only,
@@ -225,11 +229,14 @@ for i in 2 1 0; do                                                           # �
 done
 ```
 
-설정 ConfigMap(`kafka-config`·`kafka-jmx-exporter`)은 **300-data-layer-base 소유**라 파드에 설정 해시가 없다.
-반영 여부는 마운트된 파일을 직접 본다:
+설정 ConfigMap(`kafka-config`·`kafka-jmx-exporter`)은 이 차트 소유라 파드 템플릿에 `checksum/kafka-config`·`checksum/kafka-jmx` 가 있다.
+`helm upgrade` 뒤 아직 옛 설정으로 도는 파드는 revision 으로 가려낸다(`kubectl rollout status` 는 OnDelete 를 지원하지 않는다).
+마운트된 `.tpl` 은 kubelet 이 재기동 없이도 갱신하므로, 실제 적용값은 기동 시 생성된 `server.properties` 를 본다:
 
 ```bash
-kubectl -n data-layer exec kafka-0 -- grep quorum.voters /opt/kafka-config/server.properties.tpl
+kubectl -n data-layer get sts kafka -o jsonpath='{.status.currentRevision}{"\n"}{.status.updateRevision}{"\n"}'   # 둘이 다르면 미반영 파드가 있다
+kubectl -n data-layer get pod -l app=kafka -L controller-revision-hash                                           # updateRevision 과 다른 파드가 재기동 대상
+kubectl -n data-layer exec kafka-0 -- grep quorum.voters /opt/kafka/config/server.properties                     # 브로커가 실제로 기동한 값
 ```
 
 ## PV 재사용 (Released → Available)

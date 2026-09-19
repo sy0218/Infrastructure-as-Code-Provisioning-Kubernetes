@@ -1,7 +1,6 @@
 # ===============================================
 # [Kafka UI → Deployment]
-#
-# Kafka 토픽과 Consumer Group을 웹 UI로 관리한다.
+#   - Kafka 토픽과 Consumer Group을 웹 UI로 관리한다.
 #
 # - Kafka / Schema Registry 주소는 공용 ConfigMap 사용
 # - 공용 설정 변경 시 checksum으로 Pod 롤아웃

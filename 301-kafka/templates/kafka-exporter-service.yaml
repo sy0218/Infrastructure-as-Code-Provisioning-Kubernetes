@@ -1,8 +1,7 @@
 # ===============================================
 # [Kafka Exporter → Service]
-#
-# Prometheus가 이 Service를 통해 Kafka Exporter 메트릭을 수집한다.
-# 외부 공개가 필요 없으므로 ClusterIP를 사용한다.
+#   - Prometheus가 이 Service를 통해 Kafka Exporter 메트릭을 수집한다.
+#     → 외부 공개가 필요 없으므로 "ClusterIP" 사용
 #
 # Prometheus → Service port → targetPort → Exporter Pod
 #

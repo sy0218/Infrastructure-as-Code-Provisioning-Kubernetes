@@ -1,7 +1,6 @@
 # ===============================================
 # [Kafka Topic Provisioning → Job]
-#
-# Helm install/upgrade 후 한 번 실행하여 필수 토픽을 생성한다.
+#   - Helm install/upgrade 후 한 번 실행하여 필수 토픽을 생성한다.
 #
 # - Kafka가 준비될 때까지 대기
 # - --if-not-exists → 기존 토픽은 변경하지 않음

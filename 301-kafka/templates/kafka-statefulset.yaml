@@ -1,13 +1,12 @@
 # ===============================================
 # [Kafka → StatefulSet]
 #
-# Kafka Broker를 고정된 Node + Local PV에서 실행한다.
-#
-# - hostNetwork → Pod IP = Node IP (Broker용 Service 없음)
-# - Broker ID → StatefulSet ordinal(kafka-0, kafka-1, ...)
-# - Local PV → Broker별 데이터/메타데이터 디스크 고정
-# - podAntiAffinity → 한 Node에 Broker 1개만 배치
-# - OnDelete → 설정 변경 시 자동 재기동하지 않고 수동 롤링
+# - Broker를 고정된 Node + Local PV에서 실행
+# - hostNetwork로 Node IP를 Kafka 주소로 사용
+# - StatefulSet ordinal을 Broker ID로 사용
+# - Broker별 Local PV로 데이터/메타데이터를 고정
+# - podAntiAffinity로 Node당 Broker 1개 배치
+# - OnDelete로 설정 변경 시 수동 롤링
 # ===============================================
 
 apiVersion: apps/v1
@@ -22,19 +21,13 @@ metadata:
     app.kubernetes.io/part-of: data-layer
 
 spec:
-  # governing Service(serviceName)를 두지 않는다.
-  # hostNetwork라 광고 주소·quorum voters가 전부 노드 IP이고 파드별 DNS를 쓰는 곳이 없다.
-  # k8s 1.34의 StatefulSetSpec required는 selector/template뿐이라 생략할 수 있다.
-
-  # brokers 목록과 Broker 수를 동일하게 유지
+  # Kafka Broker 수 = 설정된 Broker 목록 수
   replicas: {{ len .Values.global.kafka.brokers }}
 
-  # KRaft 컨트롤러 3대는 과반(2대 이상)이 살아 있어야 쿼럼을 구성할 수 있다.
-  # OrderedReady는 앞 Pod가 Ready될 때까지 다음 Pod를 생성하지 않아 초기 쿼럼 구성이 교착될 수 있다.
-  # → 3개 브로커를 동시에 기동하도록 Parallel 사용
+  # Broker를 동시에 생성해 KRaft 초기 쿼럼 구성을 지원
   podManagementPolicy: Parallel
 
-  # 설정 변경 시 Pod를 자동 재기동하지 않음
+  # 설정 변경 시 자동 재기동하지 않고 수동으로 순차 재기동
   updateStrategy:
     type: OnDelete
 
@@ -49,40 +42,45 @@ spec:
         app.kubernetes.io/name: kafka
         app.kubernetes.io/part-of: data-layer
 
+      annotations:
+        # ConfigMap 변경 여부를 Pod Template에 반영
+        # OnDelete이므로 실제 재기동은 Pod 삭제 시 수행
+        checksum/kafka-config: {{ include (print $.Template.BasePath "/kafka-configmap.yaml") . | sha256sum }}
+        checksum/kafka-jmx: {{ include (print $.Template.BasePath "/kafka-configmap-jmx.yaml") . | sha256sum }}
+
     spec:
-      # Pod IP = Node IP
+      # Pod IP 대신 Node IP를 Kafka 주소로 사용
       hostNetwork: true
 
-      # hostNetwork에서도 클러스터 DNS 사용
+      # hostNetwork에서도 Kubernetes DNS 사용
       dnsPolicy: ClusterFirstWithHostNet
 
       enableServiceLinks: false
 
-      # Kafka graceful shutdown 시간
+      # Kafka 종료 시 정상 shutdown을 기다리는 시간
       terminationGracePeriodSeconds: {{ .Values.kafka.terminationGracePeriodSeconds }}
 
-      # Local PV 디렉터리를 Kafka 컨테이너가 그룹 권한으로 사용
       securityContext:
         fsGroup: 0
         fsGroupChangePolicy: OnRootMismatch
 
-      # 한 Node에 Kafka Broker 1개만 배치
       affinity:
-        podAntiAffinity: # 특정 Pod와 같은 Node에 배치하지 않음
+        podAntiAffinity:
+          # 동일 Node에 Kafka Broker가 2개 배치되지 않도록 보장
           requiredDuringSchedulingIgnoredDuringExecution:
-            - labelSelector: # app=kafka인 Pod를 찾음
+            - labelSelector:
                 matchLabels:
                   app: kafka
-              topologyKey: kubernetes.io/hostname # 같은 Node인지 기준으로 판단
+              topologyKey: kubernetes.io/hostname
 
       containers:
         - name: kafka
-
           image: {{ .Values.global.harborRegistry }}/data-layer/{{ .Values.kafka.imageName }}:{{ .Values.global.imageTag }}
           imagePullPolicy: IfNotPresent
 
           # StatefulSet ordinal을 Broker ID로 사용
-          # Controller 노드는 KRaft quorum 구성에 따라 역할을 결정
+          # 예: kafka-0 → 0, kafka-1 → 1
+          # 앞쪽 Broker는 KRaft controller + broker로 동작
           command:
             - /bin/sh
             - -ec
@@ -108,19 +106,19 @@ spec:
 
               echo "== kafka-${ORD} roles=${ROLES} advertised=${HOST_IP} =="
 
-              # 이미 포맷된 Local PV는 유지
+              # 이미 포맷된 Local PV는 그대로 사용
               /opt/kafka/bin/kafka-storage.sh format \
                 --ignore-formatted \
                 -t "$CLUSTER_ID" \
                 -c "$CFG"
 
-              # Broker JVM에만 Heap/JMX 옵션 적용
               export KAFKA_HEAP_OPTS="$BROKER_HEAP_OPTS"
               export KAFKA_OPTS="$BROKER_JMX_AGENT"
 
               exec /opt/kafka/bin/kafka-server-start.sh "$CFG"
 
           env:
+            # StatefulSet Pod 이름
             - name: POD_NAME
               valueFrom:
                 fieldRef:
@@ -135,28 +133,25 @@ spec:
             - name: CLUSTER_ID
               value: {{ .Values.kafka.clusterId | quote }}
 
+            # 앞쪽 N개 Broker를 KRaft Controller로 사용
             - name: CONTROLLERS
               value: {{ .Values.global.kafka.controllers | quote }}
 
-            # Broker JVM Heap 고정
+            # Broker JVM Heap
             - name: BROKER_HEAP_OPTS
               value: "-Xms{{ .Values.kafka.heap }} -Xmx{{ .Values.kafka.heap }}"
 
-            # Broker JVM의 JMX Prometheus Exporter
+            # JMX Prometheus Exporter
             - name: BROKER_JMX_AGENT
               value: "-javaagent:/opt/jmx/jmx_prometheus_javaagent.jar={{ .Values.global.kafka.ports.jmx }}:/opt/jmx/config/config.yaml"
 
           ports:
             - name: client
               containerPort: {{ .Values.global.kafka.ports.client }}
-
             - name: inter-broker
               containerPort: {{ .Values.global.kafka.ports.interBroker }}
-
             - name: controller
               containerPort: {{ .Values.global.kafka.ports.controller }}
-
-            # Prometheus가 Broker JVM 메트릭 수집
             - name: metrics
               containerPort: {{ .Values.global.kafka.ports.jmx }}
 
@@ -182,7 +177,7 @@ spec:
           resources:
             {{- toYaml .Values.kafka.resources | nindent 12 }}
 
-          # 포트가 열리면 Broker를 Ready로 판단
+          # Client 포트가 열리면 트래픽 수신 가능 상태로 판단
           readinessProbe:
             tcpSocket:
               port: client
@@ -190,15 +185,14 @@ spec:
             periodSeconds: 10
             failureThreshold: 6
 
-          # Kafka 초기 복구가 완료될 때까지 liveness 검사를 지연한다.
-          # 9092 포트가 열리기 전까지 최대 360초(6분) 대기한다.
+          # 초기 복구가 완료될 때까지 liveness 검사 지연
           startupProbe:
             tcpSocket:
               port: client
             periodSeconds: 10
             failureThreshold: 36
 
-          # startupProbe 성공 이후부터 센다
+          # 정상 기동 후 Broker 장애 감지
           livenessProbe:
             tcpSocket:
               port: client
@@ -206,16 +200,19 @@ spec:
             failureThreshold: 5
 
       volumes:
+        # Kafka 설정
         - name: config
           configMap:
             name: {{ .Values.global.kafka.name }}-config
 
+        # JMX Exporter 설정
         - name: jmx-config
           configMap:
             name: {{ .Values.global.kafka.name }}-jmx-exporter
 
-  # Broker별 Local PV에 연결되는 PVC 생성
-  # 예: data-kafka-0, metadata-kafka-0
+  # Broker별 PVC 생성
+  # 예: data-kafka-0, data-kafka-1
+  #     metadata-kafka-0, metadata-kafka-1
   volumeClaimTemplates:
     - metadata:
         name: data

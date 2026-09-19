@@ -1,8 +1,7 @@
 # ===============================================
 # [Kafka Exporter → Deployment]
-#
-# Kafka 토픽, Consumer Group, Offset, Lag 메트릭을
-# → Prometheus 형식으로 노출한다.
+#   - Kafka 토픽, Consumer Group, Offset, Lag 메트릭을
+#     → Prometheus 형식으로 노출한다.
 #
 # 브로커 주소는 공용 ConfigMap의 KAFKA_BOOTSTRAP을 사용한다.
 # Broker JVM 메트릭은 각 Broker의 JMX Exporter가 담당한다.

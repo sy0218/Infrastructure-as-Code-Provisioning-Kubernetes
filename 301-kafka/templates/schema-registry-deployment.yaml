@@ -1,12 +1,10 @@
 # ===============================================
 # [Schema Registry → Deployment]
-#
-# Kafka 메시지의 Schema를 관리한다.
-# Schema 데이터는 Kafka의 _schemas 토픽에 저장하므로 별도 PVC가 없다.
+#   - Kafka 메시지의 Schema를 관리한다.
+#     → Schema 데이터는 Kafka의 _schemas 토픽에 저장하므로 별도 PVC가 없다.
 #
 # Kafka 연결 정보는 공용 ConfigMap을 사용한다.
 # ===============================================
-
 apiVersion: apps/v1
 kind: Deployment
 

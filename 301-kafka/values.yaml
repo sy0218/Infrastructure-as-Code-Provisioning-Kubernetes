@@ -51,7 +51,6 @@ kafka:
 # _schemas, connect-* 등 애플리케이션 전용 토픽은 각 애플리케이션이 관리한다.
 # ===============================================
 topics:
-  # CDC 원본 (306-cdc Debezium)
   - raw.qm.qm-chemical.batches
   - raw.qm.qm-chemical.qc-results
   - raw.qm.qm-chemical.event-logs
@@ -63,12 +62,12 @@ topics:
 
   # 파이프라인 내부 토픽
   - cdm-topic
+  - lineage-topic
   - dlq-cdm-topic
   - dlq-cdm-consumer-rdb
   - dlq-cdm-consumer-graph
   - dlq-cdm-consumer-warehouse
   - dlq.raw
-  - lineage-topic
   - dlq-lineage
 
 

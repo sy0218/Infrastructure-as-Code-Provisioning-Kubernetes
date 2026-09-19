@@ -1,8 +1,7 @@
 # ===============================================
 # [Kafka Local PV]
-#
-# Broker 1대당 data / metadata PV를 각각 생성한다.
-# → Broker N대 = PV 2N개
+#   - Broker 1대당 data / metadata PV를 각각 생성한다.
+#     → Broker N대 = PV 2N개
 #
 # [핵심]
 # - local PV → 특정 Node의 로컬 디스크 사용

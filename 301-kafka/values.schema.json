@@ -104,6 +104,7 @@
             "name",
             "controllers",
             "replicationFactor",
+            "minInsyncReplicas",
             "numPartitions",
             "data",
             "metadata"
@@ -175,7 +176,7 @@
             },
             "name": {
               "type": "string",
-              "description": "StatefulSet 이름 → 파드 kafka-N, ConfigMap <name>-config (브로커는 hostNetwork 라 Service 없음)",
+              "description": "StatefulSet 이름 → 파드 kafka-N, ConfigMap <name>-config / <name>-jmx-exporter (브로커는 hostNetwork 라 Service 없음)",
               "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
               "maxLength": 40
             },
