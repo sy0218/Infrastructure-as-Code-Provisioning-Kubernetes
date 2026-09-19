@@ -1,28 +1,25 @@
 # ===============================================
 # [HDFS HA → StatefulSet 4종 + ZKFC]
 #
-# Pod ↔ Node ↔ Local PV 고정 + hostNetwork 구성
-# ZooKeeper ×3    → ZKFC 쿼럼
-# JournalNode ×3  → NameNode EditLog 공유
-# NameNode ×2     → Active / Standby + ZKFC
-# DataNode ×3     → HDFS 블록 저장
+# ZooKeeper ×3  → HA 상태 / 쿼럼 관리
+# JournalNode ×3 → NameNode EditLog 공유
+# NameNode ×2   → Active / Standby
+# DataNode ×3   → HDFS 데이터 블록 저장
 #
-# 공통
-# - hostNetwork → Pod IP = Node IP, Service 미사용
-# - ordinal + nodeNames → 지정 Node + PV 고정
-# - XML 설정은 Helm 기동 스크립트에서 생성
-# - OnDelete → 설정 변경 시 수동 재기동
-# - fsGroup 0 → root:root 디렉터리에 그룹 쓰기
+# - hostNetwork → Node IP로 직접 통신
+# - StatefulSet + Local PV → Pod와 디스크를 Node에 고정
+# - 설정 파일은 Pod 기동 시 생성
+# - OnDelete → 설정 변경 후 수동 재기동
 # ===============================================
 
-{{/* 노드 이름 → IP 조회 */}}
+{{/* Node 이름에 해당하는 IP 조회 */}}
 {{- define "hadoop.nodeIp" -}}
 {{- $ip := "" -}}
 {{- range .root.Values.global.nodes -}}{{- if eq .name $.name -}}{{- $ip = .ip -}}{{- end -}}{{- end -}}
 {{- required (printf "global.nodes 에 노드 %q 가 없다" .name) $ip -}}
 {{- end -}}
 
-{{/* nodeNames → ip:port 목록 생성 */}}
+{{/* 지정 Node들의 IP:Port 목록 생성 */}}
 {{- define "hadoop.addrList" -}}
 {{- $l := list -}}
 {{- range (index .root.Values.global.hadoop .comp).nodeNames -}}
@@ -72,10 +69,7 @@ dfs.namenode.datanode.registration.ip-hostname-check=false
 
 {{/*
 기동 스크립트 공통부 — key=value 설정을 Hadoop XML로 변환
-- fencing → QJM으로 단일 writer 보장
-- tail-edits.in-progress → Standby가 진행 중인 EditLog까지 추적
-- ip-hostname-check=false → DataNode가 Node IP로 등록
-- data.dir.perm=770 → 노드 디렉터리 권한과 일치
+- Hadoop 설정을 Pod 기동 시 XML로 생성
 */}}
 {{- define "hadoop.writeConf" -}}
 write_site() {
@@ -104,10 +98,10 @@ echo "== ${POD_NAME} extra=[${HDFS_SITE_EXTRA:-}] conf=${HADOOP_CONF_DIR} =="
 {{- $image := printf "%s/data-layer/%s:%s" .Values.global.harborRegistry .Values.hadoop.imageName .Values.global.imageTag }}
 
 # ===============================================
-# [ZooKeeper → StatefulSet]
+# [ZooKeeper]
 #
-# - StatefulSet → myid / 디스크 신원 유지
-# - 재기동 후 같은 멤버로 쿼럼 복귀
+# - 3개 노드로 쿼럼 구성
+# - StatefulSet으로 Pod와 데이터 디스크 유지
 # ===============================================
 ---
 apiVersion: apps/v1
@@ -123,10 +117,10 @@ metadata:
     app.kubernetes.io/part-of: data-layer
 
 spec:
-  # Service 미사용 → 모든 주소가 Node IP
+  # Service 없이 Node IP로 직접 통신
   replicas: {{ len .Values.global.hadoop.zookeeper.nodeNames }}
 
-  # 쿼럼 구성 → 동시 기동
+  # 쿼럼 구성을 위해 동시 기동
   podManagementPolicy: Parallel
 
   updateStrategy:
@@ -242,13 +236,13 @@ spec:
             periodSeconds: 30
             failureThreshold: 5
 
-  # ordinal별 PV가 지정 Node에 고정
+  # Local PV는 지정 Node에 고정
   volumeClaimTemplates:
     - metadata:
         name: data
         labels:
           app.kubernetes.io/part-of: data-layer
-          app.kubernetes.io/name: hadoop  # kafka PVC 와 구분해 선택 삭제할 수 있게 (part-of 만으로는 둘 다 잡힌다)
+          app.kubernetes.io/name: hadoop  # Hadoop PVC 식별용 라벨
       spec:
         accessModes: [ReadWriteOnce]
         storageClassName: {{ .Values.hadoop.storageClass }}
@@ -258,10 +252,10 @@ spec:
 
 
 # ===============================================
-# [JournalNode → StatefulSet]
+# [JournalNode]
 #
-# - StatefulSet → EditLog 디스크 유지
-# - 재기동 후 같은 디스크로 쿼럼 복구
+# - 3개 노드로 EditLog 공유
+# - StatefulSet으로 EditLog 디스크 유지
 # ===============================================
 ---
 apiVersion: apps/v1
@@ -279,7 +273,7 @@ metadata:
 spec:
   replicas: {{ len .Values.global.hadoop.journalnode.nodeNames }}
 
-  # JournalNode 쿼럼 구성 → 동시 기동
+  # 쿼럼 구성을 위해 동시 기동
   podManagementPolicy: Parallel
 
   updateStrategy:
@@ -324,17 +318,10 @@ spec:
             - /bin/bash
             - -ec
             - |
-              ORD="${POD_NAME##*-}"
               {{- include "hadoop.writeConf" $ | nindent 14 }}
 
               export HDFS_JOURNALNODE_OPTS="-Xms{{ .Values.hadoop.journalnode.heap }} -Xmx{{ .Values.hadoop.journalnode.heap }}"
               exec hdfs journalnode
-
-          env:
-            - name: POD_NAME
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.name
 
           ports:
             - name: rpc
@@ -368,7 +355,7 @@ spec:
         name: data
         labels:
           app.kubernetes.io/part-of: data-layer
-          app.kubernetes.io/name: hadoop  # kafka PVC 와 구분해 선택 삭제할 수 있게 (part-of 만으로는 둘 다 잡힌다)
+          app.kubernetes.io/name: hadoop
       spec:
         accessModes: [ReadWriteOnce]
         storageClassName: {{ .Values.hadoop.storageClass }}
@@ -378,18 +365,15 @@ spec:
 
 
 # ===============================================
-# [NameNode + ZKFC → StatefulSet]
+# [NameNode + ZKFC]
 #
-# - StatefulSet → nn0 / nn1 + fsimage 디스크 유지
-# - ZKFC → ZooKeeper 기반 Active / Standby 전환
+# - NameNode 2개 → Active / Standby
+# - ZKFC → ZooKeeper 기반 자동 Failover
+# - StatefulSet으로 NameNode 메타데이터 유지
 #
-# ZKFC는 같은 Pod의 NameNode 상태를 감시
-# → Active 잠금 획득 시 해당 NameNode를 Active로 전환
-#
-# 최초 기동
-# - nn0 → bootstrapStandby 실패 시 JournalNode 확인 후 format
-# - nn1 → nn0 기동 후 bootstrapStandby 재시도
-# - -force 없이 format → 기존 EditLog 보호
+# 최초 구성
+# - nn0 → 필요 시 최초 Format
+# - nn1 → nn0의 메타데이터를 Bootstrap
 # ===============================================
 ---
 apiVersion: apps/v1
@@ -407,7 +391,7 @@ metadata:
 spec:
   replicas: {{ len .Values.global.hadoop.namenode.nodeNames }}
 
-  # nn1은 스크립트에서 nn0을 대기 → 순서 강제 불필요
+  # nn1은 스크립트에서 nn0을 확인하므로 순서 강제 불필요
   podManagementPolicy: Parallel
 
   updateStrategy:
@@ -459,24 +443,24 @@ spec:
               export HDFS_NAMENODE_OPTS="-Xms{{ .Values.hadoop.namenode.heap }} -Xmx{{ .Values.hadoop.namenode.heap }}"
               NAME_DIR={{ .Values.hadoop.namenode.path }}
 
-              # 상대 NameNode의 fsimage 복사
+              # 상대 NameNode의 메타데이터를 Bootstrap
               bootstrap() {
                 hdfs namenode -bootstrapStandby -nonInteractive && return 0
                 rm -rf "${NAME_DIR}/current" "${NAME_DIR}/in_use.lock"; return 1
               }
 
-              # fsimage가 없으면 중단된 bootstrap 잔재 정리
+              # Bootstrap 잔재가 있으면 정리
               if ! ls "${NAME_DIR}"/current/fsimage_* >/dev/null 2>&1; then
                 rm -rf "${NAME_DIR}/current" "${NAME_DIR}/in_use.lock"
                 if [ "${ORD}" -eq 0 ]; then
-                  # nn0: bootstrap 실패 시 JournalNode 확인 후 최초 format
+                  # nn0: Bootstrap 실패 시 JournalNode 확인 후 최초 Format
                   if ! bootstrap; then
                     for a in {{ include "hadoop.addrList" (dict "root" $ "comp" "journalnode" "port" $ports.journalnodeRpc "sep" " ") }}; do
                       until timeout 3 bash -c "exec 3<>/dev/tcp/${a%:*}/${a##*:}" 2>/dev/null; do
                         echo "== nn0: waiting JournalNode ${a} before format =="; sleep 5
                       done
                     done
-                    # -force 없이 format → 기존 EditLog 보호
+                    # -force 없이 Format하여 기존 EditLog 보호
                     hdfs namenode -format -nonInteractive -clusterid {{ .Values.hadoop.clusterId | quote }}
                   fi
                 else
@@ -507,7 +491,7 @@ spec:
           resources:
             {{- toYaml .Values.hadoop.namenode.resources | nindent 12 }}
 
-          # RPC 포트가 열릴 때까지 최대 10분 대기
+          # NameNode RPC 준비 대기
           startupProbe:
             tcpSocket:
               port: rpc
@@ -526,7 +510,7 @@ spec:
             periodSeconds: 30
             failureThreshold: 5
 
-        # ZKFC → NameNode 상태 감시 + Active 잠금 관리
+        # ZKFC → NameNode 상태 감시 및 Failover
         - name: zkfc
           image: {{ $image }}
           imagePullPolicy: IfNotPresent
@@ -541,7 +525,7 @@ spec:
 
               export HDFS_ZKFC_OPTS="-Xms{{ .Values.hadoop.zkfc.heap }} -Xmx{{ .Values.hadoop.zkfc.heap }}"
 
-              # ZooKeeper HA znode 생성 → 이미 있으면 정상
+              # HA용 ZooKeeper znode 생성
               until hdfs zkfc -formatZK -nonInteractive; do
                 rc=$?
                 [ "${rc}" -eq 2 ] && break
@@ -582,7 +566,7 @@ spec:
         name: data
         labels:
           app.kubernetes.io/part-of: data-layer
-          app.kubernetes.io/name: hadoop  # kafka PVC 와 구분해 선택 삭제할 수 있게 (part-of 만으로는 둘 다 잡힌다)
+          app.kubernetes.io/name: hadoop
       spec:
         accessModes: [ReadWriteOnce]
         storageClassName: {{ .Values.hadoop.storageClass }}
@@ -592,11 +576,11 @@ spec:
 
 
 # ===============================================
-# [DataNode → StatefulSet]
+# [DataNode]
 #
-# - StatefulSet → 블록 디스크 / storageID 유지
-# - 다른 Node로 이동하지 않도록 디스크 고정
-# - hdfs-site의 nn0 / nn1 주소로 Active 전환 대응
+# - HDFS 데이터 블록 저장
+# - Local PV로 데이터 디스크를 Node에 고정
+# - StatefulSet으로 Pod와 디스크 신원 유지
 # ===============================================
 ---
 apiVersion: apps/v1
@@ -661,7 +645,7 @@ spec:
             - |
               ORD="${POD_NAME##*-}"
 
-              # hostNetwork → Node IP로 등록
+              # Node IP로 DataNode 등록
               HDFS_SITE_EXTRA="dfs.datanode.hostname=${HOST_IP}"
               {{- include "hadoop.writeConf" $ | nindent 14 }}
 
@@ -713,7 +697,7 @@ spec:
         name: data
         labels:
           app.kubernetes.io/part-of: data-layer
-          app.kubernetes.io/name: hadoop  # kafka PVC 와 구분해 선택 삭제할 수 있게 (part-of 만으로는 둘 다 잡힌다)
+          app.kubernetes.io/name: hadoop
       spec:
         accessModes: [ReadWriteOnce]
         storageClassName: {{ .Values.hadoop.storageClass }}

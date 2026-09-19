@@ -1,0 +1,128 @@
+# ===============================================
+# [HDFS 디렉토리 부트스트랩 Job]
+#   - HDFS 필수 디렉토리를 자동 생성
+#   - mkdir / chown은 멱등 작업으로 upgrade 시에도 안전
+#   - Hadoop HA가 준비될 때까지 Job 내부에서 대기
+#   - Helm hook timeout은 15분 기준
+# ===============================================
+
+apiVersion: batch/v1
+kind: Job
+
+metadata:
+  name: {{ .Values.global.hadoop.name }}-dirs
+  namespace: {{ .Values.global.namespace }}
+
+  labels:
+    app: hadoop-dirs
+    app.kubernetes.io/name: hadoop
+    app.kubernetes.io/component: dirs
+    app.kubernetes.io/part-of: data-layer
+
+  annotations:
+    # Hadoop StatefulSet 생성 후 실행
+    # 실제 NameNode 준비 대기는 스크립트에서 처리
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-weight: "10"
+
+    # 기존 Hook Job 정리 후 새 Job 실행
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+
+
+spec:
+  # 파드 자체 재시작 없이 실패 상태와 로그를 유지
+  backoffLimit: 0
+
+  # Job 전체 실행 제한 시간
+  activeDeadlineSeconds: 900
+
+  template:
+    metadata:
+      labels:
+        app: hadoop-dirs
+        app.kubernetes.io/part-of: data-layer
+
+    spec:
+      # 실패한 파드를 재시작하지 않고 로그 확인 가능
+      restartPolicy: Never
+
+      # 불필요한 Service 환경변수 주입 방지
+      enableServiceLinks: false
+
+      # hostNetwork 불필요
+      # Hadoop RPC는 Pod 네트워크에서 접근
+      containers:
+        - name: dirs
+
+          image: {{ .Values.global.harborRegistry }}/data-layer/{{ .Values.hadoop.imageName }}:{{ .Values.global.imageTag }}
+          imagePullPolicy: IfNotPresent
+
+          command:
+            - /bin/bash
+            - -ec
+            - |
+
+              # Hadoop Client 설정 생성
+              {{- include "hadoop.writeConf" $ | nindent 14 }}
+
+              # HDFS가 준비될 때까지 최대 720초 대기
+              END=$(( $(date +%s) + 720 ))
+
+              # HDFS Client 내부 재시도를 짧게 설정
+              # 실제 대기는 아래 루프에서 제어
+              OPTS="-D dfs.client.failover.max.attempts=2 -D dfs.client.failover.sleep.base.millis=1000 -D dfs.client.retry.max.attempts=2"
+
+
+              # HDFS 디렉토리 생성 + 소유자 설정
+              # mkdir / chown 모두 멱등 작업
+              ensure() {
+
+                until timeout 45 hdfs dfs $OPTS -mkdir -p "$1" \
+                  && timeout 45 hdfs dfs $OPTS -chown "$2" "$1"; do
+
+                  # 최대 대기시간 초과 시 Job 실패
+                  if [ "$(date +%s)" -ge "$END" ]; then
+                    echo "== ${POD_NAME}: HDFS unavailable — abort ($1) =="
+                    exit 1
+                  fi
+
+                  # Active NameNode / SafeMode 해제 대기
+                  echo "== ${POD_NAME}: waiting HDFS for $1 =="
+                  sleep 10
+
+                done
+
+                # 생성 결과 확인
+                timeout 45 hdfs dfs $OPTS -ls -d "$1"
+              }
+
+
+              # 기본 Warehouse 디렉토리
+              ensure \
+                {{ required "global.hadoop.warehouse.path 가 필요하다" .Values.global.hadoop.warehouse.path | quote }} \
+                {{ required "global.hadoop.warehouse.user 가 필요하다" .Values.global.hadoop.warehouse.user | quote }}
+
+
+              # 추가 디렉토리 생성
+              {{- range .Values.hadoop.extraDirs }}
+              ensure \
+                {{ required "hadoop.extraDirs[].path 가 필요하다" .path | quote }} \
+                {{ required "hadoop.extraDirs[].owner 가 필요하다" .owner | quote }}
+              {{- end }}
+
+
+          env:
+            # 로그에 Job Pod 이름 표시
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+
+            # HDFS CLI용 최소 JVM Heap
+            - name: HADOOP_CLIENT_OPTS
+              value: "-Xmx128m"
+
+
+          # 현재 리소스 requests는 미적용
+          resources:
+            {{- toYaml .Values.hadoop.dirs.resources | nindent 12 }}
