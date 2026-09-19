@@ -98,7 +98,7 @@ Dockerfile 은 `requirements.txt` 설치가 전부다).
 전제(순서대로):
 1. **300-data-layer-base** 설치 완료 — 네임스페이스·공용 ConfigMap/Secret·파드 생성 권한.
 2. **303-postgres** 설치 완료 — 메타DB `airflow`(없으면 초기화 Job 이 대기하다 실패한다).
-3. **Ansible `airflow_repo_prereq`** — 스케줄 가능한 **모든 노드**에 `/data/airflow-repo`(root:root 0755)
+3. **Ansible `airflow_repo_prereq`** — 스케줄 가능한 **모든 노드**에 `/project/data_pipeline/data_layer_airflow`(root:root 0755)
    + 코드 rsync: `bin/start_airflow_repo_prereq.sh <Ansible 저장소 절대경로> all`. ⚠ `type: Directory` 라 경로가 없는 노드에 스케줄되면 그 파드는 기동하지 못한다
    (조용히 "DAG 0개"가 되는 대신 그 자리에서 멈추게 하려는 것이다 — 아래 '코드 반영').
    컨테이너는 UID 50000 으로 **읽기만** 하므로 쓰기 권한은 주지 않는다.
@@ -151,7 +151,7 @@ kubectl -n data-layer get pods -l app.kubernetes.io/component=worker           #
 
 ### 코드 반영 — 3노드 rsync (재빌드가 아니다)
 
-원본은 `/my_project/data_pipeline/data_layer_airflow`, 목적지는 노드마다 `/data/airflow-repo` 다
+원본은 `/my_project/data_pipeline/data_layer_airflow`, 목적지는 노드마다 `/project/data_pipeline/data_layer_airflow` 다
 (양쪽 끝의 `/` 를 빠뜨리면 `--delete` 가 한 단계 안쪽에 트리를 다시 만든다).
 
 정본은 Ansible 롤이다 — 손으로 칠 때도 옵션을 줄이지 않는다(아래 ⚠ 가 이유다).
@@ -165,7 +165,7 @@ for n in ap s1 s2; do
   rsync -a --delete --delay-updates --delete-delay --chmod=Da+rx,Fa+r \
     --exclude '.git/' --exclude 'logs/' --exclude '__pycache__/' --exclude '*.pyc' \
     --exclude '*.env' --exclude '.env*' \
-    /my_project/data_pipeline/data_layer_airflow/ root@$n:/data/airflow-repo/
+    /my_project/data_pipeline/data_layer_airflow/ root@$n:/project/data_pipeline/data_layer_airflow/
 done
 kubectl -n data-layer logs deploy/airflow-dag-processor --tail=20   # 30초 안에 재스캔 로그
 ```
@@ -173,7 +173,7 @@ kubectl -n data-layer logs deploy/airflow-dag-processor --tail=20   # 30초 안�
 - ⚠ **`*.env` 를 빼지 말 것.** `airflow.env` 는 Secret `airflow-env` 의 값 원본(fernet 키·메타DB·데이터 노드 SSH 비밀번호)이다.
   파드는 그 값을 Secret 으로 받으므로 노드에 사본이 있을 이유가 없고, 한 번 흘리면 3노드 디스크에 평문으로 남는다.
 - ⚠ **`--chmod=Da+rx,Fa+r` 를 빼지 말 것.** `-a` 는 원본의 모드를 그대로 옮긴다 — 원본 루트가 `0700` 이면
-  노드의 `/data/airflow-repo` 도 `0700` 이 되어 Ansible 이 준 `0755` 를 조용히 되돌리고, UID 50000 이 진입조차
+  노드의 `/project/data_pipeline/data_layer_airflow` 도 `0700` 이 되어 Ansible 이 준 `0755` 를 조용히 되돌리고, UID 50000 이 진입조차
   못 해 **파드는 뜨는데 DAG 만 0개**가 된다(`0600` 인 파일도 같은 식으로 사라진다). `a+rx`/`a+r` 은 더하기만 한다.
 - ⚠ **`--delay-updates` 를 빼지 말 것.** dag-processor 가 30초마다 폴더를 훑는데 기본 rsync 는 파일을
   하나씩 갈아 끼우므로, 절반만 동기화된 순간을 파싱하면 **DAG 이 잠깐 통째로 사라진다**(그 창에 걸린
@@ -194,12 +194,12 @@ kubectl -n data-layer logs deploy/airflow-dag-processor --tail=20   # 30초 안�
 
 ```bash
 # ① 노드에 경로가 있는가 — 없으면 파드가 아예 못 뜬다(Pending / hostPath type check failed)
-for n in ap s1 s2; do ssh root@$n 'stat -c "%n %U:%G %a" /data/airflow-repo'; done   # root:root 755
+for n in ap s1 s2; do ssh root@$n 'stat -c "%n %U:%G %a" /project/data_pipeline/data_layer_airflow'; done   # root:root 755
 # ② UID 50000 이 읽을 수 있는가 — 0755 면 읽기는 되지만 rsync 가 원본의 좁은 모드를 옮겨 올 수 있다
 kubectl -n data-layer exec deploy/airflow-dag-processor -- ls /opt/airflow/dags
 # ③ rsync 가 그 노드까지 갔는가 — 파드가 어느 노드에 떴는지부터 본다
 kubectl -n data-layer get pod -l app=airflow-dag-processor -o wide
-for n in ap s1 s2; do ssh root@$n 'ls /data/airflow-repo/dags | wc -l'; done
+for n in ap s1 s2; do ssh root@$n 'ls /project/data_pipeline/data_layer_airflow/dags | wc -l'; done
 # ④ DAGS_FOLDER·PYTHONPATH 가 마운트와 맞는가 — 둘 다 airflowHome 파생이라 어긋나면 누군가 경로를 박은 것이다
 kubectl -n data-layer exec deploy/airflow-dag-processor -- printenv AIRFLOW__CORE__DAGS_FOLDER PYTHONPATH
 kubectl -n data-layer logs deploy/airflow-dag-processor --tail=50   # 파싱/import 에러는 여기에만 남는다
@@ -217,7 +217,7 @@ kubectl -n data-layer logs deploy/airflow-dag-processor --tail=50   # 파싱/imp
   Ready 가 된 '다음' post 훅을 돌리는데, 마이그레이션 전에는 Ready 가 될 수 없어 서로를 기다리다
   `--timeout` 에 걸린다(`--atomic` 은 그 뒤 롤백까지 한다).
 - `helm uninstall` 은 이 스택에서는 안전한 편이다 — PVC 가 없어 메타DB(303)와 로그(HDFS)가 그대로 남고,
-  코드(`/data/airflow-repo`)도 hostPath 라 볼륨 수명주기가 노드에 있어 지워지지 않는다.
+  코드(`/project/data_pipeline/data_layer_airflow`)도 hostPath 라 볼륨 수명주기가 노드에 있어 지워지지 않는다.
   다만 **훅 리소스는 릴리스 매니페스트가 아니라서 Job `airflow-init` 과 그 파드가 네임스페이스에 남는다**
   (`hook-delete-policy` 가 `before-hook-creation` 뿐 — 다음 설치 직전에만 정리된다).
   깨끗이 지우려면 `kubectl -n data-layer delete job airflow-init` 을 한 번 더 친다.

@@ -1,7 +1,7 @@
 # ===============================================
 # [KubernetesExecutor Task Pod Template]
-#   - Scheduler가 읽는 태스크 Pod 기본 템플릿
-#   - 태스크 실행 시 Pod 생성 → 종료 후 삭제
+#   - Scheduler가 읽는 Task Pod 기본 템플릿
+#   - Task 실행 시 Pod 생성 → 종료 후 삭제
 #   - Pod 생성/삭제 권한은 default SA 에 붙은 300 의 ClusterRoleBinding 이 준다(차트에 SA/RBAC 없음)
 # ===============================================
 

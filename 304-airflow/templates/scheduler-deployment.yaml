@@ -1,9 +1,8 @@
 # ===============================================
 # [Airflow Scheduler]
-#   - DAG 스케줄링 및 KubernetesExecutor 태스크 Pod 생성
+#   - DAG 스케줄링 및 KubernetesExecutor Task Pod 생성
 #   - 태스크는 직접 실행하지 않고 Pod Template 기반으로 생성
 # ===============================================
-
 apiVersion: apps/v1
 kind: Deployment
 

@@ -34,8 +34,8 @@ Image  : {{ .Values.global.harborRegistry }}/data-layer/airflow:{{ .Values.globa
   → {{ .Values.airflowHome }}/<이름> (readOnly hostPath)
 
 - Task 로그
-  {{ .Values.logs.remoteBaseFolder }}
-  → WebHDFS {{ .Values.webhdfs.hosts }}:{{ .Values.webhdfs.port }}
+  s3://{{ .Values.global.minioBuckets.airflowLogs }}
+  → MinIO {{ .Values.global.minioEndpoint }} (Connection {{ .Values.logs.connId }})
 
 - 메타DB
   {{ include "airflow.postgresHost" . }}:{{ .Values.global.postgres.port }}/{{ .Values.global.postgres.databases.airflow }}
@@ -48,7 +48,7 @@ Image  : {{ .Values.global.harborRegistry }}/data-layer/airflow:{{ .Values.globa
 - 303-postgres : Airflow 메타DB
 - Harbor : airflow:{{ .Values.global.imageTag }}
 - 3노드 : {{ .Values.repo.hostPath }} 디렉토리 + DAG/코드 rsync
-- Hadoop : WebHDFS {{ .Values.webhdfs.port }} + 로그 경로
+- 301-minio : 버킷 {{ .Values.global.minioBuckets.airflowLogs }} (global.minioBuckets — 301-minio 의 hook Job 이 만든다)
 
 
 [확인]
@@ -66,7 +66,7 @@ kubectl -n {{ .Values.global.namespace }} get deploy,job,svc,ing -l app.kubernet
 - [주의] → DAG/코드는 모든 노드에 동일하게 동기화
 - 실행 중 태스크 로그 : kubectl logs
 - 실패 태스크 Pod : 원인 확인 후 직접 삭제
-- helm uninstall 후에도 메타DB / HDFS 로그 / hostPath 코드는 유지
+- helm uninstall 후에도 메타DB / MinIO 로그 / hostPath 코드는 유지
 - airflow-init Job : 필요 시 직접 삭제
 - Variable / Connection (DAG 이 읽는 것 — Secret airflow-env 의 AIRFLOW_VAR_* / AIRFLOW_CONN_*)
   Variable   : collector_crypto_key · collector_db_query · collector_kafka_config · collector_snapshot_config

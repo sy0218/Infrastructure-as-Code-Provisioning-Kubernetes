@@ -3,7 +3,6 @@
 #   - UI / REST API / Execution API 제공
 #   - Stateless → RollingUpdate
 # ===============================================
-
 apiVersion: apps/v1
 kind: Deployment
 
