@@ -1,0 +1,19 @@
+Neo4j 배포 완료 → Release {{ .Release.Name }} / Chart {{ .Chart.Name }}-{{ .Chart.Version }}
+
+[구성]
+- Deployment : neo4j (단일 인스턴스 Community, Recreate, 힙 {{ .Values.memory.heap }} / 페이지캐시 {{ .Values.memory.pagecache }})
+- PVC        : neo4j-data ({{ .Values.storage.size }}, {{ .Values.storage.storageClass }})
+- Service    : neo4j ({{ .Values.ports.bolt }} Bolt / {{ .Values.ports.http }} HTTP)
+
+[접속]
+- 클러스터 내부 전용 → Bolt: {{ .Values.global.neo4jBoltUri }} (300 의 PLATFORM_NEO4J_URI 와 같은 값)
+- Browser: kubectl -n {{ .Values.global.namespace }} port-forward svc/neo4j {{ .Values.ports.http }}:{{ .Values.ports.http }} {{ .Values.ports.bolt }}:{{ .Values.ports.bolt }} → http://localhost:{{ .Values.ports.http }}
+
+[확인]
+kubectl -n {{ .Values.global.namespace }} get pod,pvc,svc -l app=neo4j -o wide
+kubectl -n {{ .Values.global.namespace }} exec deploy/neo4j -- sh -c 'cypher-shell -u "$PLATFORM_NEO4J_USER" -p "$PLATFORM_NEO4J_PASSWORD" "RETURN 1"'   # 컨테이너 안에서 env 를 푼다
+
+[주의]
+- 계정은 첫 기동(빈 /data)에만 NEO4J_AUTH 로 만들어진다 → 이후 global.secrets.neo4jPassword 를 바꿔도 DB 는 안 바뀐다(ALTER USER)
+- Node 장애 시 자동 재기동은 Longhorn nodeDownPodDeletionPolicy 설정 필요 (301-minio RUNBOOK 과 같다)
+- helm uninstall 시 PVC 삭제 → 그래프 데이터도 삭제된다

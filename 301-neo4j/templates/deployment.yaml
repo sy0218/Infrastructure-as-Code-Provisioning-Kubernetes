@@ -1,0 +1,141 @@
+# ===============================================
+# [Neo4j Deployment]
+#   - 단일 Pod + RWO PVC(Longhorn)
+#   → Recreate: 기존 Pod 종료 후 새 Pod 생성 (RWO PVC의 Multi-Attach 방지)
+#
+# - 노드 고정 없이 장애 시 다른 노드에서 재기동
+#   → Longhorn이 PVC를 새 노드에 연결
+# - Community Edition 은 인스턴스 1개 → 클러스터링 없음, 복제는 Longhorn 몫
+# ===============================================
+
+{{- /* NEO4J_AUTH 는 초기 관리자 계정 neo4j 의 비밀번호만 정한다 — 다른 사용자명이면 서버가 기동을 거부하므로 렌더에서 막는다 */}}
+{{- if ne .Values.global.secrets.neo4jUser "neo4j" }}
+{{- fail (printf "301-neo4j global.secrets.neo4jUser=%q — NEO4J_AUTH 는 사용자명 neo4j 만 받는다" .Values.global.secrets.neo4jUser) }}
+{{- end }}
+
+apiVersion: apps/v1
+kind: Deployment
+
+metadata:
+  name: neo4j
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: neo4j
+    app.kubernetes.io/name: neo4j
+    app.kubernetes.io/part-of: data-layer
+
+spec:
+  replicas: 1
+
+  # RWO PVC 사용 → 기존 Pod 종료 후 새 Pod 생성
+  strategy:
+    type: Recreate
+
+  selector:
+    matchLabels:
+      app: neo4j
+
+  template:
+    metadata:
+      labels:
+        app: neo4j
+        app.kubernetes.io/name: neo4j
+        app.kubernetes.io/part-of: data-layer
+
+    spec:
+      # Kubernetes Service 환경변수 자동 주입 비활성화
+      enableServiceLinks: false
+
+      # Node 장애 감지 후 Pod 퇴거
+      # → 실제 강제 삭제 및 재기동은 Longhorn 정책에 의존
+      tolerations:
+        - key: node.kubernetes.io/unreachable
+          operator: Exists
+          effect: NoExecute
+          tolerationSeconds: {{ .Values.tolerationSeconds }}
+
+        - key: node.kubernetes.io/not-ready
+          operator: Exists
+          effect: NoExecute
+          tolerationSeconds: {{ .Values.tolerationSeconds }}
+
+      containers:
+        - name: neo4j
+          image: {{ .Values.global.harborRegistry }}/data-layer/neo4j:{{ .Values.global.imageTag }}
+          imagePullPolicy: IfNotPresent
+
+          # 공용 envFrom 을 쓰지 않는다 → NEO4J_ 접두 env 를 서버가 자기 설정으로 읽고, 앱 env 는 필요 없다
+          env:
+            # 공용 Secret 의 클라이언트 키(PLATFORM_NEO4J_*) 하나를 서버 초기 계정으로 번역 → 컨슈머와 갈릴 수 없다
+            - name: PLATFORM_NEO4J_USER
+              valueFrom:
+                secretKeyRef:
+                  name: data-layer-secrets
+                  key: PLATFORM_NEO4J_USER
+
+            - name: PLATFORM_NEO4J_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: data-layer-secrets
+                  key: PLATFORM_NEO4J_PASSWORD
+
+            # 첫 기동(빈 /data)에만 적용된다 → 이후 비밀번호 변경은 DB 안(ALTER USER)에서
+            - name: NEO4J_AUTH
+              value: "$(PLATFORM_NEO4J_USER)/$(PLATFORM_NEO4J_PASSWORD)"
+
+            # 리슨 포트 = Service targetPort 와 같은 원본(values ports)
+            - name: NEO4J_server_bolt_listen__address
+              value: {{ printf ":%d" (int .Values.ports.bolt) | quote }}
+            - name: NEO4J_server_http_listen__address
+              value: {{ printf ":%d" (int .Values.ports.http) | quote }}
+
+            # 힙·페이지캐시 고정 → 안 주면 노드 RAM 기준으로 자동 산정해 과점한다 (limits 없음)
+            - name: NEO4J_server_memory_heap_initial__size
+              value: {{ .Values.memory.heap | quote }}
+            - name: NEO4J_server_memory_heap_max__size
+              value: {{ .Values.memory.heap | quote }}
+            - name: NEO4J_server_memory_pagecache_size
+              value: {{ .Values.memory.pagecache | quote }}
+
+          ports:
+            - name: bolt
+              containerPort: {{ .Values.ports.bolt }}
+            - name: http
+              containerPort: {{ .Values.ports.http }}
+
+          volumeMounts:
+            - name: data
+              mountPath: /data
+
+          # 힙 1g + 페이지캐시 512m + JVM 여유 → values memory 를 올리면 같이 올린다
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "2Gi"
+
+          # 드라이버가 붙는 Bolt 포트가 열리면 트래픽 수신 (HTTP 가 아니라 Bolt 를 보는 이유 — 컨슈머가 붙는 포트)
+          readinessProbe:
+            tcpSocket:
+              port: bolt
+            periodSeconds: 10
+            failureThreshold: 6
+
+          # 복구(트랜잭션 로그 재생)가 끝날 때까지 liveness 검사 지연
+          startupProbe:
+            tcpSocket:
+              port: bolt
+            periodSeconds: 10
+            failureThreshold: 30
+
+          # 정상 기동 후 프로세스 장애 감지
+          livenessProbe:
+            tcpSocket:
+              port: bolt
+            periodSeconds: 60
+            failureThreshold: 5
+
+      # Longhorn PVC 연결
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: neo4j-data

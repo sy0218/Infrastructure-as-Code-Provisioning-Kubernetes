@@ -1,0 +1,28 @@
+# ===============================================
+# [Neo4j Service]
+#   - ClusterIP → 클러스터 내부에서만 접근 (global.neo4jBoltUri 가 이 이름·포트를 가리킨다)
+#   - Pod가 다른 노드로 이동해도 Service 주소는 유지
+# ===============================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: neo4j
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: neo4j
+    app.kubernetes.io/name: neo4j
+    app.kubernetes.io/part-of: data-layer
+
+spec:
+  type: ClusterIP
+
+  selector:
+    app: neo4j
+
+  ports:
+    - name: bolt
+      port: {{ .Values.ports.bolt }}
+      targetPort: bolt
+    - name: http
+      port: {{ .Values.ports.http }}
+      targetPort: http
