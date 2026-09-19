@@ -1,0 +1,51 @@
+# ===============================================
+# [HDFS 클라이언트 ConfigMap]
+# - warehouse 컨슈머에 HDFS HA 접속 설정 제공
+# - 301-hadoop과 동일한 global.hadoop 값을 사용
+# - 설정 변경 시 warehouse 컨슈머 자동 롤아웃
+# ===============================================
+
+{{- $ns := .Values.global.hadoop.nameservice }}
+{{- $rpc := int .Values.global.hadoop.ports.namenodeRpc }}
+{{- $ids := list }}
+{{- range $i, $n := .Values.global.hadoop.namenode.nodeNames }}{{ $ids = append $ids (printf "nn%d" $i) }}{{ end }}
+
+apiVersion: v1
+kind: ConfigMap
+
+metadata:
+  name: hdfs-client-config
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app.kubernetes.io/name: hdfs-client-config
+    app.kubernetes.io/component: cdm-consumer
+    app.kubernetes.io/part-of: data-layer
+
+data:
+  # HDFS 기본 경로 → HA nameservice 사용
+  core-site.xml: |
+    <?xml version="1.0" encoding="UTF-8"?>
+    <configuration>
+      <property><name>fs.defaultFS</name><value>hdfs://{{ $ns }}</value></property>
+    </configuration>
+
+  # NameNode HA 접속 정보
+  hdfs-site.xml: |
+    <?xml version="1.0" encoding="UTF-8"?>
+    <configuration>
+      <property><name>dfs.nameservices</name><value>{{ $ns }}</value></property>
+      <property><name>dfs.ha.namenodes.{{ $ns }}</name><value>{{ join "," $ids }}</value></property>
+
+      {{- range $i, $n := .Values.global.hadoop.namenode.nodeNames }}
+      <property>
+        <name>dfs.namenode.rpc-address.{{ $ns }}.nn{{ $i }}</name>
+        <value>{{ include "pipeline.nodeIp" (dict "root" $ "name" $n) }}:{{ $rpc }}</value>
+      </property>
+      {{- end }}
+
+      # HA 장애 전환용 클라이언트 Provider
+      <property>
+        <name>dfs.client.failover.proxy.provider.{{ $ns }}</name>
+        <value>org.apache.hadoop.hdfs.server.namenode.ha.ConfiguredFailoverProxyProvider</value>
+      </property>
+    </configuration>

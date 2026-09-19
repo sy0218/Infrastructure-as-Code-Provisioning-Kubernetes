@@ -1,9 +1,9 @@
 # ===============================================
 # [Lineage Consumer Deployment]
-#
-# - lineage-topic → PostgreSQL(data_pipeline.data_lineage), DSN 은 공용 LINEAGE_PG_DSN
-# - 본 데이터 경로와 토픽·그룹이 분리돼 계보 DB 장애가 파이프라인 정지로 번지지 않는다
+#   - lineage-topic → PostgreSQL 계보 저장
+#   - 본 데이터와 토픽·Consumer Group을 분리
 # ===============================================
+
 apiVersion: apps/v1
 kind: Deployment
 
@@ -30,9 +30,10 @@ spec:
         app.kubernetes.io/part-of: data-layer
 
     spec:
-      # Kubernetes Service 환경변수 자동 주입 비활성화
+      # 불필요한 Service 환경변수 자동 주입 방지
       enableServiceLinks: false
 
+      # 종료 전 현재 배치 commit 시간 확보
       terminationGracePeriodSeconds: {{ .Values.consumer.terminationGracePeriodSeconds }}
 
       containers:
@@ -40,6 +41,7 @@ spec:
           image: {{ .Values.global.harborRegistry }}/data-layer/cdm-lineage-consumer:{{ .Values.global.imageTag }}
           imagePullPolicy: IfNotPresent
 
+          # 공통 환경변수 + Secret 주입
           envFrom:
             - configMapRef:
                 name: data-layer-env
@@ -47,13 +49,21 @@ spec:
                 name: data-layer-secrets
 
           env:
+            # 공용 PG DSN을 Lineage 전용 이름으로 매핑
+            - name: LINEAGE_PG_DSN
+              valueFrom:
+                configMapKeyRef:
+                  name: data-layer-env
+                  key: PLATFORM_PG_DSN
+
+            # Lineage 전용 로그 레벨
             - name: LOG_LEVEL
               valueFrom:
                 configMapKeyRef:
                   name: data-layer-env
                   key: LINEAGE_LOG_LEVEL
 
-          # requests 는 당분간 주석 처리 — 노드 여유가 없다 (304-airflow 와 같은 임시 조치)
+          # 리소스 requests는 노드 여유 확보 후 적용
           # resources:
           #   requests:
           #     cpu: "50m"

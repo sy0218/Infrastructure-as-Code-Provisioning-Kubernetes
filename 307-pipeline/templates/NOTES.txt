@@ -4,11 +4,16 @@ CDM 파이프라인 배포 완료 → Release {{ .Release.Name }} / Chart {{ .Ch
 - cdm-mapper-<모듈>      Deployment ×{{ len .Values.mapper.modules }} (replicas {{ .Values.mapper.replicas }})
 - cdm-consumer-<종류>    Deployment ×{{ len .Values.consumer.kinds }} (rdb / graph / warehouse)
 - cdm-lineage-consumer   Deployment ×1
-- tcp-socket-collector   Deployment ×1 (hostNetwork, nodeSelector {{ .Values.tcpSocket.nodeSelector | toJson }})
+- tcp-socket-collector   Deployment ×1 (hostNetwork, nodeAffinity {{ .Values.tcpSocket.nodeNames | toJson }} 중 한 노드)
+- hdfs-client-config     ConfigMap (core-site/hdfs-site → hdfs: true 인 컨슈머의 /etc/hadoop/conf, global.hadoop 파생, checksum 롤아웃)
 
-[전제 — 수집 노드 라벨 (차트가 붙이지 않는다)]
-kubectl label node <장비가 보내는 노드> {{ range $k, $v := .Values.tcpSocket.nodeSelector }}{{ $k }}={{ $v }}{{ end }}
-→ 없으면 tcp-socket-collector 만 Pending
+[전제 — 수집 노드]
+tcp-socket-collector 는 tcpSocket.nodeNames {{ .Values.tcpSocket.nodeNames | toJson }} 중 한 노드에 hostNetwork 로 뜬다
+→ 장비는 그 노드 IP 로 보내야 한다 (get pod -o wide 로 어디 떴는지 확인, 후보가 둘 이상이면 장비가 둘 다 알아야 한다)
+
+[전제 — 301-hadoop]
+HDFS global.hadoop.warehouse.path 가 user {{ .Values.global.hadoop.warehouse.user }}(= HADOOP_USER_NAME) 소유로 있어야 한다 (301-hadoop hook Job hadoop-dirs 가 만든다)
+→ 없으면 cdm-consumer-warehouse 가 첫 쓰기에서 권한 오류
 
 [확인]
 kubectl -n {{ .Values.global.namespace }} get deploy -l app.kubernetes.io/part-of=data-layer | grep -E 'cdm-|tcp-socket'
@@ -18,4 +23,4 @@ kubectl -n {{ .Values.global.namespace }} get pod -l app=tcp-socket-collector -o
 [주의]
 - probe 없음 → 이상 감지는 kafka-exporter 의 컨슈머 그룹 lag(Grafana)
 - DQ 적용이 안 먹으면: get pod -l app=cdm-mapper,cdm.mapper/module=<모듈> 이 0건인지 (라벨/모듈명 불일치)
-- mapper.terminationGracePeriodSeconds({{ .Values.mapper.terminationGracePeriodSeconds }}) > 300 의 DATA_QUALITY_RESTART_DRAIN_TIMEOUT
+- mapper.terminationGracePeriodSeconds({{ .Values.mapper.terminationGracePeriodSeconds }}) 는 helm upgrade·노드 drain 의 상한 — DQ 적용 재기동은 305-api 가 삭제 요청에 300 의 DATA_QUALITY_RESTART_DRAIN_TIMEOUT 을 직접 실어 보낸다

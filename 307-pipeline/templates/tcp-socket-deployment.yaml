@@ -1,11 +1,11 @@
 # ===============================================
 # [TCP Socket Collector Deployment]
 #
-# - 장비가 TCP 로 미는 원시 데이터 → raw.* 토픽
-# - hostNetwork: 리슨 포트가 런타임 DB 값(realtime_source, 5초마다 재조회)이라
-#   포트를 '선언'해야 하는 Service 모델과 맞지 않는다 → Service 없음
-# - 대가: 스케줄러가 포트를 모르고, ingest 노드가 죽으면 수집이 멈춘다
+# - 장비 TCP 데이터 → raw.* Kafka
+# - hostNetwork + 런타임 동적 포트 → Service 없이 직접 수신
+# - 단일 Pod + Recreate로 동일 NodePort 충돌 방지
 # ===============================================
+
 apiVersion: apps/v1
 kind: Deployment
 
@@ -18,10 +18,10 @@ metadata:
     app.kubernetes.io/part-of: data-layer
 
 spec:
-  # 1 고정 → 노드 포트를 직접 잡아 같은 노드에 2개가 뜨면 bind 실패
+  # hostNetwork에서 동일 포트 중복 bind 방지
   replicas: 1
 
-  # RollingUpdate 는 새 파드가 Ready 된 뒤 옛 파드를 내린다 → hostNetwork 에선 같은 포트로 겹쳐 멈춘다
+  # 교체 시 기존 Pod 종료 후 새 Pod 생성
   strategy:
     type: Recreate
 
@@ -32,30 +32,41 @@ spec:
   template:
     metadata:
       labels:
-        # ⚠ 305-api 의 '실시간 등록' 화면이 이 라벨로 수집기 상태를 찾는다 (TCP_SOCKET_CONTAINER 와 짝)
+        # 305-api가 수집기 상태 조회에 사용하는 라벨
         app: tcp-socket-collector
         app.kubernetes.io/name: tcp-socket-collector
         app.kubernetes.io/part-of: data-layer
 
     spec:
-      # Kubernetes Service 환경변수 자동 주입 비활성화
       enableServiceLinks: false
 
+      # Pod IP = Node IP
       hostNetwork: true
-      # hostNetwork 파드는 노드 resolv.conf 를 쓴다 → svc DNS(COLLECTOR_DB_HOST·schema-registry)를 잃지 않게
+
+      # hostNetwork에서도 Cluster DNS 사용
       dnsPolicy: ClusterFirstWithHostNet
 
-      # 장비가 패킷을 보내는 노드 → 라벨은 수동 (kubectl label node <노드> ingest=true)
-      nodeSelector:
-        {{- toYaml .Values.tcpSocket.nodeSelector | nindent 8 }}
+      # 장비 수신이 가능한 Node로 스케줄링
+      # nodeNames는 global.nodes에서 검증
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values:
+                      {{- range .Values.tcpSocket.nodeNames }}
+                      {{- $_ := include "pipeline.nodeIp" (dict "root" $ "name" .) }}
+                      - {{ . | quote }}
+                      {{- end }}
 
       containers:
         - name: tcp-socket-collector
           image: {{ .Values.global.harborRegistry }}/data-layer/tcp-socket-collector:{{ .Values.global.imageTag }}
           imagePullPolicy: IfNotPresent
 
-          # ports 없음 → 포트 집합이 런타임에 정해진다
-
+          # 수신 포트가 런타임에 결정되므로 ports 미정의
           envFrom:
             - configMapRef:
                 name: data-layer-env
@@ -63,21 +74,34 @@ spec:
                 name: data-layer-secrets
 
           env:
-            # 등록 표(realtime_source)가 collect_job 과 같은 스키마에 있다
+            # Collector DB 연결
+            - name: TCP_SOCKET_PG_DSN
+              valueFrom:
+                configMapKeyRef:
+                  name: data-layer-env
+                  key: PLATFORM_PG_DSN
+
             - name: TCP_SOCKET_DB_SCHEMA
               valueFrom:
                 configMapKeyRef:
                   name: data-layer-env
                   key: COLLECTOR_DB_SCHEMA
+
+            # 수집 실패 데이터를 raw 단계 DLQ로 전송
+            - name: TCP_SOCKET_DLQ_TOPIC
+              valueFrom:
+                configMapKeyRef:
+                  name: data-layer-env
+                  key: DATA_QUALITY_DLQ_TOPIC
+
+            # Collector 전용 로그 레벨
             - name: LOG_LEVEL
               valueFrom:
                 configMapKeyRef:
                   name: data-layer-env
                   key: TCP_SOCKET_LOG_LEVEL
 
-          # probe 없음 → 리슨 포트가 소스마다 달라 대상을 고정할 수 없다
-
-          # requests 는 당분간 주석 처리 — 노드 여유가 없다 (304-airflow 와 같은 임시 조치)
+          # 동적 수신 포트라 고정 probe 사용 안 함
           # resources:
           #   requests:
           #     cpu: "100m"

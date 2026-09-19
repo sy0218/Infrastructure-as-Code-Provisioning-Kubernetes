@@ -1,23 +1,23 @@
 # ===============================================
 # [307-pipeline 전용 설정]
-# → 공통값(global.*)은 values.common.yaml에서 관리
-# → 토픽·배치·로그레벨 등 실행 설정은 300 의 공용 ConfigMap 에 있다 (여기 없다)
+# - 공통값: values.common.yaml
+# - 실행 설정: 300 공용 ConfigMap
 # ===============================================
 
+
 # ===============================================
-# [CDM Mapper]  raw.* → cdm-topic
+# [CDM Mapper] raw.* → cdm-topic
 # ===============================================
 mapper:
-  # ⚠ 유효 병렬도 상한 = 소스 토픽 파티션 수(3)
+  # cdm-topic 파티션 수(3) 기준 병렬 처리
   replicas: 1
 
-  # DQ 적용 = 305-api 가 파드를 delete → 진행 중 배치를 드레인하고 종료.
-  # ⚠ 300 의 DATA_QUALITY_RESTART_DRAIN_TIMEOUT(180) 보다 커야 한다 (+ 여유 20)
-  terminationGracePeriodSeconds: 200
+  # 종료 전 현재 배치를 flush + commit할 최대 시간
+  # - helm upgrade / node drain 시 적용
+  # - DQ 재기동은 305-api가 별도 timeout을 전달
+  terminationGracePeriodSeconds: 300
 
-  # 모듈명 = data_layer_mappers/<모듈>.py → 실행 python -m cdm.data_layer_mappers.<모듈>
-  # ⚠ 라벨 cdm.mapper/module 값이 된다 — 305-api 의 DQ 적용이 이 라벨로 재기동 대상을 고른다
-  #   (오타 = '적용은 성공했는데 아무것도 안 바뀜')
+  # 실행할 Mapper 모듈
   modules:
     - qm_chemical_batches
     - qm_chemical_event_logs
@@ -30,53 +30,53 @@ mapper:
 
 
 # ===============================================
-# [CDM Consumer]  cdm-topic → 저장소
-#   - 종류별 차이 = 이미지 + '코드가 읽는 이름 → 공용 오브젝트 키' 번역표
-#   - 이름이 같은 값(KAFKA_BOOTSTRAP·CDM_TOPIC·CDM_CONSUMER_<종류>_* 등)은 envFrom 으로 들어온다
+# [CDM Consumer] cdm-topic → 저장소
+# - kind별 이미지와 저장소 연결 정보
 # ===============================================
 consumer:
-  # 상한 = cdm-topic 파티션 수(3)
+  # cdm-topic 파티션 수(3) 기준 병렬 처리
   replicas: 1
 
-  # 마이크로배치(*_BATCH_TIME=60) 커밋까지 마치고 나가야 한다 → 배치 시간 + 여유
-  terminationGracePeriodSeconds: 90
+  # 종료 전 현재 마이크로배치를 commit할 최대 시간
+  terminationGracePeriodSeconds: 300
 
   kinds:
     rdb:
-      image: cdm-consumer-rdb      # PLATFORM_PG_DSN 을 그대로 읽는다 → 번역 없음
+      # PostgreSQL 저장
+      image: cdm-consumer-rdb
 
     graph:
+      # Neo4j 저장
       image: cdm-consumer-graph
+
       fromConfigMap:
         NEO4J_URI: PLATFORM_NEO4J_URI
         NEO4J_DATABASE: PLATFORM_NEO4J_DATABASE
+
       fromSecret:
         NEO4J_USER: PLATFORM_NEO4J_USER
         NEO4J_PASSWORD: PLATFORM_NEO4J_PASSWORD
 
     warehouse:
+      # Iceberg / HDFS 저장
       image: cdm-consumer-warehouse
-      # MinIO 자격증명을 두 벌 두지 않으려고 ROOT 계정을 S3 키로 재사용한다
-      fromConfigMap:
-        ICEBERG_S3_ENDPOINT: MINIO_S3_ENDPOINT
-      fromSecret:
-        ICEBERG_S3_ACCESS_KEY: MINIO_ROOT_USER
-        ICEBERG_S3_SECRET_KEY: MINIO_ROOT_PASSWORD
+
+      # HDFS 설정 및 실행 사용자 주입
+      hdfs: true
 
 
 # ===============================================
-# [Lineage Consumer]  lineage-topic → PostgreSQL
+# [Lineage Consumer] lineage-topic → PostgreSQL
 # ===============================================
 lineage:
-  # 계보 이벤트는 양이 적고 순서 요구가 없다 → 1
+  # 저처리량 계보 데이터 → 단일 Consumer
   replicas: 1
 
 
 # ===============================================
-# [TCP Socket Collector]  장비 push → raw.*
-#   - 장비가 패킷을 보내는 노드에만 떠야 한다 → 저장소 유일의 nodeSelector
-#   - ⚠ 노드 라벨은 차트가 붙이지 않는다 (수동): kubectl label node s2 ingest=true
+# [TCP Socket Collector] 장비 push → raw.*
 # ===============================================
 tcpSocket:
-  nodeSelector:
-    ingest: "true"
+  # hostNetwork 사용 → 장비는 실제 Pod가 실행된 노드 IP로 전송
+  # 후보 노드가 여러 개면 장비에서 모든 노드 IP에 접근 가능해야 함
+  nodeNames: ["s1"]

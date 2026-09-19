@@ -8,11 +8,10 @@
 # 설계
 #   - 전부 PVC 없는 Deployment. 리슨 포트가 없어 probe 없음 (이상 감지 = 컨슈머 그룹 lag)
 #   - 매퍼는 이미지 하나 + 모듈별 command → values 의 modules 목록으로 찍는다
-#   - tcp-socket-collector 만 hostNetwork + nodeSelector (리슨 포트가 런타임 DB 값이라 Service 불가)
+#   - tcp-socket-collector 만 hostNetwork + nodeAffinity(tcpSocket.nodeNames) (리슨 포트가 런타임 DB 값이라 Service 불가)
 #
 # 의존성
-#   - 300-data-layer-base(공용 ConfigMap·Secret), 301-kafka, 301-minio, 303-postgres 선행 배포
-#   - ingest 노드 라벨은 수동: kubectl label node <노드> ingest=true
+#   - 300-data-layer-base(공용 ConfigMap·Secret), 301-kafka, 301-minio, 301-hadoop(warehouse 컨슈머의 HDFS — /warehouse 소유자), 303-postgres 선행 배포
 # ===================================================
 apiVersion: v2
 name: pipeline
