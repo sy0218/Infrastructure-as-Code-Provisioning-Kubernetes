@@ -1,5 +1,5 @@
 # =====================================================
-# Prometheus 스크랩 설정 → ConfigMap
+# [Prometheus 스크랩 설정  ConfigMap]
 # =====================================================
 # Prometheus가 어떤 메트릭을 어디서 수집할지 정의한다.
 #
@@ -19,9 +19,8 @@
 # - kafka-exporter : Kafka 토픽 / Offset / Consumer Lag
 # - kafka-jmx      : Kafka Broker JVM / JMX
 # - postgres       : PostgreSQL 인스턴스 메트릭
-# - cnpg-operator  : CloudNativePG 오퍼레이터(조정 루프) — 유일하게 cnpg-system 을 본다
+# - cnpg-operator  : CloudNativePG 오퍼레이터(조정 루프) → 유일하게 cnpg-system 을 본다
 # =====================================================
-
 apiVersion: v1
 kind: ConfigMap
 

@@ -60,8 +60,9 @@ values 에서 파생될 값이 없는 순수 콘텐츠라서다. 고치면 재�
   (`-f values.common.yaml`). 여기서 쓰는 것은 `namespace`(300 소유) · `harborRegistry` ·
   `imageTag`(build_and_push.sh 에 넘긴 값과 같은 불변 태그) · `ingressClassName` ·
   `hosts.grafana`/`hosts.prometheus` 다.
-- `hosts.grafana` 는 300 의 `GRAFANA_URL`·`GF_SERVER_ROOT_URL` 과 같은 값에서 온다 —
-  Ingress 주소와 Grafana 가 믿는 자기 주소가 어긋날 수 없다(구 grafana.host 복사본은 삭제됐다).
+- `hosts.grafana` 는 300 의 `GRAFANA_URL` 과 같은 값에서 온다. Grafana 자신의 `GF_SERVER_ROOT_URL` 은 이 차트가
+  그 키를 `configMapKeyRef` 로 번역해 넣는다(300 에 사본 키 없음) — Ingress 주소와 Grafana 가 믿는 자기 주소가
+  어긋날 수 없다(구 grafana.host 복사본은 삭제됐다).
 - `alloy.*MetricsPath` — config.alloy 컴포넌트 이름과 결합된 경로. Prometheus 스크랩 경로와
   alloy readinessProbe 가 같은 값 하나를 보므로, 컴포넌트 이름을 바꾸면 여기도 같이 바꾼다.
 - kafka-jmx 잡은 파드 라벨 `app=kafka` + 포트 이름 `metrics` 로 301-kafka 브로커 파드(:9404)를 발견한다

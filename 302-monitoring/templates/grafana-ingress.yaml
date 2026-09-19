@@ -1,11 +1,9 @@
 # ===============================================
 # [Grafana Ingress]
-#
-# - 브라우저 → Ingress → Grafana Service로 전달
-# - Host 기반 라우팅 사용
-# - 외부 접근은 Ingress VIP를 통해 처리
+#   - 브라우저 → Ingress → Grafana Service로 전달
+#   - Host 기반 라우팅 사용
+#   - 외부 접근은 Ingress VIP를 통해 처리
 # ===============================================
-
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 

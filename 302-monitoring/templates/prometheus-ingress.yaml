@@ -1,7 +1,7 @@
 # ===============================================
 # [Prometheus Deployment ingress]
-# → 외부에서 Prometheus UI에 접근하기 위한 진입점
-# → Host 기준으로 Prometheus Service에 연결
+#   - 외부에서 Prometheus UI에 접근하기 위한 진입점
+#     → Host 기준으로 Prometheus Service에 연결
 # ===============================================
 apiVersion: networking.k8s.io/v1
 kind: Ingress # 쿠버네티스 인그레스 리소스

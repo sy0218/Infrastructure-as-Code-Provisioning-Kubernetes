@@ -30,7 +30,7 @@ alloy:
 # ===============================================
 prometheus:
   # 메트릭 보관 기간
-  retention: "30d"
+  retention: "15d"
 
   # Prometheus 데이터 저장공간
   storageSize: "20Gi"

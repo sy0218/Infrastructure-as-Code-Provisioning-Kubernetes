@@ -1,8 +1,7 @@
 # ===============================================
 # [Alloy → DaemonSet]
-#
-# 각 Node에 Alloy Pod를 1개씩 배치하여
-# Node / Container 메트릭을 수집한다.
+#   - 각 Node에 Alloy Pod를 1개씩 배치하여
+#     → Node / Container 메트릭을 수집한다.
 #
 # Node 1 ── Alloy ──┐
 # Node 2 ── Alloy ──┼──→ Prometheus
@@ -35,7 +34,7 @@ spec:
 
   # =============================================
   # [Pod Template]
-  # DaemonSet이 각 Node에 생성할 Pod 정의
+  #   - DaemonSet이 각 Node에 생성할 Pod 정의
   # =============================================
   template:
     metadata:

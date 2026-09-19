@@ -1,8 +1,7 @@
 # ===============================================
 # [Grafana Deployment]
-#
-# - 단일 Pod + RWO PVC 사용
-# - Recreate: 기존 Pod 종료 후 새 Pod 생성
+#   - 단일 Pod + RWO PVC 사용
+#   - Recreate: 기존 Pod 종료 후 새 Pod 생성
 #   → RollingUpdate 시 RWO 볼륨 Multi-Attach 방지
 # ===============================================
 
@@ -72,6 +71,14 @@ spec:
                 name: data-layer-env
             - secretRef:
                 name: data-layer-secrets
+
+          env:
+            # Grafana 가 믿는 자기 주소 = 305-api 가 링크로 쓰는 공용 GRAFANA_URL 하나 → 두 주소가 어긋날 수 없다
+            - name: GF_SERVER_ROOT_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: data-layer-env
+                  key: GRAFANA_URL
 
           ports:
             - name: http
