@@ -12,10 +12,10 @@ CNI Cilium 1.20.1(kube-proxy 대체, host-only NIC eth1). 도구 핀: Terraform 
 - **디렉토리 이름과 달리 Terraform 은 100~200 뿐이다.** 300 이후(300~307·400)는 **전부 Helm 차트**다
   (Chart.yaml/values.yaml/values.schema.json/templates/NOTES.txt/README.md). ArgoCD app-of-apps 는 예정이고 아직 없다.
 - 내용물은 `/project/data_pipeline` 의 docker compose 스택을 쿠버네티스로 옮긴 것이다(문서 곳곳의 `/my_project` 는 구 경로).
-  그 저장소가 소유하는 것은 **이미지(Dockerfile 24종)와 값 원천 문서(`.env`·`airflow.env`)** 뿐이고, 매니페스트·env 조립은 이 저장소 몫이다.
+  그 저장소가 소유하는 것은 **이미지(Dockerfile 25종)와 값 원천 문서(`.env`·`airflow.env`)** 뿐이고, 매니페스트·env 조립은 이 저장소 몫이다.
   노드 선행작업(디렉토리·hosts·containerd 레지스트리 신뢰·Longhorn OS 준비)은 `/project/Infrastructure-as-Code-Ansible` 이 담당한다.
 - **공통값의 단일 출처는 저장소 루트 `values.common.yaml` 의 `global.*`** 이다 — 노드 IP 표(`global.nodes`·`global.kafka.brokers`)·포트·
-  네임스페이스·`harborRegistry`(`data-layer-harbor:80`)·`imageTag`·`hosts`·`ingressVip`·`minioEndpoint`·`neo4jBoltUri`·`secrets`.
+  네임스페이스·`harborRegistry`(`data-layer-harbor:80`)·`imageTag`·`hosts`·`ingressVip`·`minioEndpoint`·`minioBuckets`·`neo4jBoltUri`·`secrets`.
   각 차트 values.yaml 에는 `global` 이 없고, **모든 helm 명령에 `-f values.common.yaml` 을 붙인다**(안 주면 `values.schema.json` 이 렌더 전에 막는다).
 - 스토어 위치: **Neo4j 만 K8s 밖**(노드 로컬 — Ansible 에 설치 롤은 없고 etc_hosts 이름 등록뿐, `global.neo4jBoltUri`=`bolt://192.168.56.38:7687`).
   **MinIO 는 301-minio**(ClusterIP, `global.minioEndpoint`=`http://minio.data-layer.svc.cluster.local:9000`), **Kafka 는 301-kafka**(StatefulSet, hostNetwork,
@@ -23,9 +23,10 @@ CNI Cilium 1.20.1(kube-proxy 대체, host-only NIC eth1). 도구 핀: Terraform 
   구 Ansible 의 kafka/minio/postgres 설치 롤은 전부 퇴역했고 `kafka_prereq`·`hadoop_prereq`·`airflow_repo_prereq`(노드 디렉토리)만 남았다.
 - 파이프라인은 300 의 공용 ConfigMap `data-layer-env` 의 접속값으로 붙는데 **접속 주소는 값이 아니라 파생값**이다 — `KAFKA_BOOTSTRAP` 은
   `global.kafka.brokers` × `ports.client` 로 조립한 **노드 IP 목록**(브로커는 hostNetwork 라 Service 가 없다), `COLLECTOR_DB_HOST` 는
-  `global.postgres.clusterName` 에서 파생한 CNPG `-rw` Service FQDN, `MINIO_S3_ENDPOINT` 는 `global.minioEndpoint` 다. 주소 문자열을 values 에 복사하지 않는다.
-- **설정 ConfigMap 의 소유자**: 300 이 `kafka-config`(server.properties.tpl)·`kafka-jmx-exporter`(`files/jmx-exporter.yaml`)를 만들고 301-kafka 가 마운트한다
-  (다른 릴리스라 checksum 롤아웃이 없다 — 어차피 브로커는 OnDelete). 302 는 자기 `alloy-config`·`prometheus-config`·`grafana-datasource` 를 소유한다(같은 릴리스라 checksum 자동 롤아웃).
+  `global.postgres.clusterName` 에서 파생한 CNPG `-rw` Service FQDN, `CDM_OBJSTORE_ENDPOINT`·`CDM_OBJSTORE_BUCKET` 은 `global.minioEndpoint`·`global.minioBuckets.config`, `ICEBERG_WAREHOUSE` 는 `global.hadoop.nameservice` 에서 파생한 `hdfs://<nameservice>/warehouse` 다(데이터 레이크는 301-hadoop, MinIO 는 설정 버킷 `config` 전용). 주소 문자열을 values 에 복사하지 않는다.
+- **설정 ConfigMap 은 그것을 읽는 워크로드 차트가 소유한다.** 301-kafka 가 `kafka-config`(server.properties.tpl)·`kafka-jmx-exporter`(`files/jmx-exporter.yaml`)를, 302 가
+  `alloy-config`·`prometheus-config`·`grafana-datasource` 를 소유하고 파드 템플릿에 `checksum/*` 을 심는다(302 는 `helm upgrade` 만으로 롤아웃, 301 브로커는 OnDelete 라 updateRevision 만 갈리고
+  재기동은 사람이), 307 이 warehouse 컨슈머의 HDFS 클라이언트 설정 `hdfs-client-config`(core-site/hdfs-site — `global.hadoop` 파생, `checksum/hdfs-client`)를 소유한다. 300 은 공용 `data-layer-env`·Secret 만 소유한다.
 
 ## 아키텍처: 번호 디렉토리 = 독립 스택
 
@@ -59,8 +60,8 @@ CNI Cilium 1.20.1(kube-proxy 대체, host-only NIC eth1). 도구 핀: Terraform 
 ### 워크로드 — Helm 차트 (300 이후)
 
 - `300-data-layer-base` — **네임스페이스 `data-layer` + 공용 ConfigMap `data-layer-env` + Secret `data-layer-secrets` + CNPG 용 Secret `<clusterName>-app-user`(basic-auth) + ClusterRoleBinding
-  `data-layer-default-admin` + Kafka 설정 ConfigMap 2종의 소유자.** 워크로드가 없고 이미지도 쓰지 않는다. 이 차트가 소유하는 값은 `graphLabelPrefix` 하나뿐이고 나머지는 전부 `global` 에서 온다.
-  `_helpers.tpl` 이 `datalayer.kafkaBootstrap`·`postgresHost`·`postgresDsn`·`kafkaQuorumVoters` 를 조립한다(301-kafka·304 의 헬퍼와 같은 원본·같은 방식 — 복사본이 아니라 파생값).
+  `data-layer-default-admin` 의 소유자.** 워크로드가 없고 이미지도 쓰지 않는다. 이 차트만 쓰는 값은 없고 전부 `global` 에서 온다(values.yaml 자체가 없다).
+  `_helpers.tpl` 이 `datalayer.kafkaBootstrap`·`postgresHost`·`postgresDsn` 을 조립한다(301-kafka·304 의 헬퍼와 같은 원본·같은 방식 — 복사본이 아니라 파생값).
   ⚠ **release 기록은 `-n default`** 에 둔다 — `data-layer` 는 이 차트가 만들 대상이라 설치 시점엔 없고, `--create-namespace` 를 쓰면 차트 안의 Namespace 오브젝트와 "already exists" 로 충돌한다.
   ⚠ `helm uninstall data-layer-base` 는 **네임스페이스째** 지운다(301~400 워크로드 전부). 값 변경은 `helm upgrade` 로만. 설정을 바꾸면 소비 워크로드를 사람이 재기동한다(다른 릴리스라 checksum 이 없다).
 - `301-hadoop` — **HDFS HA 의 Helm 차트**: ZooKeeper ×3 · JournalNode ×3 · NameNode ×2(+ZKFC 사이드카) · DataNode ×3 = StatefulSet 4종이 `templates/hadoop-statefulset.yaml` 한 파일에 있다.
@@ -69,47 +70,54 @@ CNI Cilium 1.20.1(kube-proxy 대체, host-only NIC eth1). 도구 핀: Terraform 
   ConfigMap 이 없다 — core-site/hdfs-site/zoo.cfg 는 기동 스크립트가 values 로 생성한다(`hadoop.writeConf` define). 이미지 `hadoop`(Hadoop 3.4.3 + ZooKeeper 3.9.5 바이너리만, uid 1000)은 4종 공용.
   노드 디렉토리 `/data/hadoop-{zookeeper,journalnode,namenode,datanode}` 는 Ansible `hadoop_prereq` 가 root:root **2770** 으로 만들고(3노드 전부 — s2 의 namenode 디렉토리는 의도적으로 빈 채),
   차트의 `dfs.datanode.data.dir.perm=770` 과 **한 쌍**이다(한쪽만 바꾸면 DataNode 가 chmod 에 실패). `clusterId`(`CID-data-layer`)는 기존 데이터가 있으면 변경 금지. NameNode 초기화는 fsimage 유무로 판단한다(nn0 은 bootstrapStandby 실패 시 `-force` 없이 format, nn1 은 재시도 루프).
-  소비자는 304-airflow 의 WebHDFS 원격 로그(`/airflow-logs` 를 user `airflow` 소유로 **미리** 만든다 — 없어도 기동은 되고 로그만 조용히 사라진다). `resources.requests` 는 노드 메모리 여유가 없어 주석 처리(BestEffort). ⚠ 300번대 중 **README·values.schema.json 이 아직 없는 유일한 차트** — 추가 대상.
+  소비자는 둘 — 304-airflow 의 WebHDFS 원격 로그(`/airflow-logs` 를 user `airflow` 소유로 **미리** 만든다 — 없어도 기동은 되고 로그만 조용히 사라진다)와 307 warehouse 컨슈머의 Iceberg 데이터 파일(`global.hadoop.warehouse.path`=`/warehouse`, libhdfs 직결 — 이것이 데이터 레이크이고 MinIO 는 설정 버킷 전용).
+  **hook Job `hadoop-dirs`**(post-install/upgrade, `before-hook-creation`)가 `/warehouse` 를 `global.hadoop.warehouse.user` 소유로 멱등 생성한다(mkdir -p + chown, 활성 NameNode 가 뜰 때까지 720s 대기 — 그래서 **`helm install/upgrade` 에 `--timeout 15m` 필수**). 추가 경로는 values `hadoop.extraDirs`(`/airflow-logs` 는 아직 수동). `resources.requests` 는 노드 메모리 여유가 없어 주석 처리(BestEffort). ⚠ 300번대 중 **README·values.schema.json 이 아직 없는 유일한 차트** — 추가 대상.
 - `301-kafka` — **Kafka 클러스터(StatefulSet `kafka`) + 운영 도구 3종(schema-registry · kafka-ui · kafka-exporter)**. **오퍼레이터를 쓰지 않는다** — Strimzi 는 `hostNetwork` 를 지원하지 않고(#3753·#7397 기각) 외부 접속이 NodePort 로 갈라져 STS 로 결정했다.
   **장애는 쿠버네티스가 아니라 Kafka 복제(RF 3)로 막는다** — hostNetwork(파드 IP = 노드 IP = 광고 주소, DNAT 없음) + 정적 local PV(`kafka-local`, 브로커당 data 10Gi + metadata 2Gi). **브로커 ID = 파드 ordinal = `global.kafka.brokers` 표 인덱스**이고 PV 의 `claimRef` 가
   PVC 이름(`data-kafka-N`)에 미리 묶여 kafka-N 은 brokers[N] 에만 뜬다. 노드가 죽으면 파드는 거기 남고 남은 복제본이 서비스를 잇는다 — 복구는 사람이 표를 고쳐 같은 ID 를 새 노드에서 띄운다(README '노드 장애'). **`updateStrategy: OnDelete`** — 사람이 한 대씩 지우며 URP 0 을 확인한다(README '롤링 재기동').
-  서버 설정은 **300 의 ConfigMap `kafka-config`** 의 `server.properties.tpl` 이고 파드별 값(node.id·roles·광고 IP)은 기동 스크립트가 `POD_NAME`/`status.hostIP` 로 치환한다 — apache/kafka 이미지의 엔트리포인트는 쓰지 않는다(`kafka-storage format --ignore-formatted` 를 직접 돈다).
+  서버 설정은 **이 차트의 ConfigMap `kafka-config`**(`server.properties.tpl` — 정적 쿼럼은 `kafka.quorumVoters` 헬퍼)·`kafka-jmx-exporter`(`files/jmx-exporter.yaml`)이고 파드별 값(node.id·roles·광고 IP)은 기동 스크립트가
+  `POD_NAME`/`status.hostIP` 로 치환한다 — apache/kafka 이미지의 엔트리포인트는 쓰지 않는다(`kafka-storage format --ignore-formatted` 를 직접 돈다). 파드 템플릿의 `checksum/kafka-config`·`checksum/kafka-jmx` 는 OnDelete 라 재기동을
+  일으키지 않지만 옛 설정으로 도는 파드를 `controller-revision-hash` 로 드러낸다(README '롤링 재기동').
   앞 `controllers`(3)개가 controller+broker 겸용(정적 쿼럼), 그 뒤는 broker 전용 → 증설은 표 뒤에 붙이고 축소는 뒤에서 뺀다. 노드 디렉토리(`/data/kafka-broker`·`/data/kafka-controller`, root:root **2770**)는 Ansible `kafka_prereq` 가 만들고 `global.kafka.data/metadata.path` 와 글자 그대로 같아야 한다.
   **브로커에는 Service 를 두지 않는다**(headless·ClusterIP 둘 다 — STS `serviceName` 도 생략). 토픽 16종은 helm hook Job `kafka-topics`(`--if-not-exists` 멱등, 브로커 RF 개 등록 대기) — **`helm install/upgrade` 에 `--timeout 15m` 필수**(기본 5m 은 Job 예산 900s 보다 짧다).
   `min.insync.replicas=1` 은 구 로컬 설치 계약의 의도된 승계. ⚠ `helm uninstall` 은 PVC(volumeClaimTemplates)를 남기는데 **재설치 전에 PVC 를 먼저 지워야 한다**(pv-protection 이 PV 를 붙잡아 새 PV 에 안 붙는다 — Retain 이라 디스크 데이터는 그대로). `podManagementPolicy`·`serviceName` 은 불변 → `delete sts --cascade=orphan` 후 upgrade.
-- `301-minio` — **내부 전용 S3(MinIO 단일 인스턴스)**: Deployment(`Recreate`) + RWO PVC(`longhorn` 20Gi) + ClusterIP 9000. 웹 콘솔은 `MINIO_BROWSER=off`(관리는 이미지 동봉 mc).
+- `301-minio` — **내부 전용 S3(MinIO 단일 인스턴스) — 설정·스키마 오브젝트 저장소(`config` 버킷)만 맡고 데이터 레이크가 아니다(Iceberg 데이터 파일은 301-hadoop HDFS)**: Deployment(`Recreate`) + RWO PVC(`longhorn` 20Gi) + ClusterIP 9000. 웹 콘솔은 `MINIO_BROWSER=off`(관리는 이미지 동봉 mc).
   **장애는 앱 복제가 아니라 Longhorn 스토리지 복제로 막는다** — 같은 301 번대의 kafka·hadoop 과 정확히 반대 전략(저쪽은 노드에 박힌 인프라, 이쪽은 노드를 옮겨 다니는 단일 인스턴스). nodeSelector 가 없고 노드가 죽으면 다른 노드에서 같은 볼륨을 붙는데,
   그 자동화는 100-base 의 `nodeDownPodDeletionPolicy` + values `tolerationSeconds`(60) + **옮겨 갈 노드에 Longhorn instance-manager 가 떠 있을 것**(2 vCPU 노드에서 CPU request 부족이면 조용히 안 뜬다) 셋이 맞물려야 한다 — 검증·판정·복구는 `RUNBOOK.md`.
-  env 는 공용 `envFrom` 기본형을 쓰지 않는 문서화된 예외다(`MINIO_*` 접두 변수를 서버가 설정으로 해석). ⚠ 버킷(`config`·`warehouse`)과 설정 시드는 차트가 만들지 않는다 — `mc pipe` 로 한 번 부트스트랩(README '버킷', 2026-09-04 완료). `helm uninstall` 은 PVC 까지 지운다(longhorn reclaim Delete — 데이터 소실).
+  env 는 공용 `envFrom` 기본형을 쓰지 않는 문서화된 예외다(`MINIO_*` 접두 변수를 서버가 설정으로 해석). 버킷은 **hook Job `minio-buckets`**(post-install/upgrade — 이름은 **`global.minioBuckets`**(config·airflowLogs — 300 `CDM_OBJSTORE_BUCKET`·304 `REMOTE_BASE_LOG_FOLDER` 가 같은 값을 읽는다), ILM 만료만 이 차트 values `expireDays`(airflowLogs 30, global 에 없는 키면 렌더 실패); `mc mb -p`·`mc ilm import` 멱등, 서버 대기 420s < activeDeadlineSeconds 480 → **`--timeout 10m` 필수**)가 만들고, ⚠ `config` 의 설정 시드만 차트 밖 — `mc pipe` 로 한 번 부트스트랩(README '버킷'). `helm uninstall` 은 PVC 까지 지운다(longhorn reclaim Delete — 데이터 소실).
 - `302-monitoring` — alloy(DaemonSet, hostNetwork, privileged) + prometheus + grafana. **수집/스크랩 설정의 소유자는 이 차트의 ConfigMap 3종**(`alloy-config`·`prometheus-config`·`grafana-datasource`)이고 파드 템플릿의 `checksum/*` 어노테이션이 렌더 결과 해시라
   `helm upgrade` 만으로 롤아웃된다. 그래서 alloy·prometheus 이미지는 `FROM` 한 줄(Harbor 경유 목적)이고 설정 변경에 재빌드·새 태그가 필요 없다. Grafana 대시보드 JSON 만 이미지에 굽는다(값 파생이 없는 순수 콘텐츠).
   prometheus·grafana 는 values `nodeNames`(s1/s2) 의 nodeAffinity 로 노드 후보를 정하고 PVC 는 `longhorn`. 스크랩 잡 6개(alloy-node·alloy-cadvisor·kafka-exporter·kafka-jmx·postgres·cnpg-operator)는 전부 kubernetes_sd(라벨·포트 이름) — static 타깃이 없다.
   300 이 먼저 설치돼 있어야 한다(네임스페이스·Grafana 계정 Secret·SD 용 API 권한 — 권한이 없으면 `/targets` 가 **조용히** 빈다). `helm uninstall` 은 PVC 두 개를 지운다.
 - `303-postgres` — **플랫폼 PostgreSQL(CNPG Cluster `data-layer-postgres`, 인스턴스 2 — primary 1 + replica 1, nodeNames s1/s2 + required antiAffinity)**. 304 의 메타 DB 라서 앞 번호다.
   DB 3종(`data_layer`/`airflow`/`iceberg_catalog`)의 부트스트랩 정본이 여기다 — `bootstrap.initdb.postInitApplicationSQL`(timescaledb 확장·스키마·테이블·하이퍼테이블) + `Database` CR 2개. CNPG 는 `/docker-entrypoint-initdb.d/` 를 실행하지 않는다.
-  앱 계정은 **superuser 가 아니다**(3개 DB 의 owner — 임시 관리는 `kubectl exec ... psql -U postgres`, 원격 superuser 로그인은 막혀 있다). 계정 Secret `<clusterName>-app-user` 는 300 소유(인증 정보의 소유자 — basic-auth 타입이라 공용 Opaque 와 분리).
-  **`imageTag`(`16.15-v0.1.1`)는 `global.imageTag` 를 쓰지 않는 유일한 값** — CNPG 웹훅이 태그에서 PG 메이저를 읽어 `v0.1.0` 은 "invalid version tag" 로 거부된다(operand = PG 16.15 + timescaledb 2.29.0, `build_and_push.sh` 의 태그와 글자 그대로 같아야 한다).
+  앱 계정은 **superuser 가 아니다**(3개 DB 의 owner — 임시 관리는 `kubectl exec ... psql -U postgres`, 원격 superuser 로그인은 막혀 있다). 계정 Secret `<clusterName>-app-user` 는 300 소유(인증 정보의 소유자 — basic-auth 타입이라 공용 Opaque 와 분리, 305-api 도 이 Secret 을 `COLLECTOR_DB_USER/PASSWORD` 로 secretKeyRef — 공용 Opaque 에 DB 계정 사본이 없다).
+  **`imageTag`(`16.15-v0.1.0`)는 `global.imageTag` 를 쓰지 않는 유일한 값** — CNPG 웹훅이 태그에서 PG 메이저를 읽어 `v0.1.0` 은 "invalid version tag" 로 거부된다(operand = PG 16.15 + timescaledb 2.29.0, `build_and_push.sh` 의 태그와 글자 그대로 같아야 한다).
   스토리지 `local-path` 40Gi(첫 install 후 변경 불가). 외부 접속은 `-external` LoadBalancer Service → MetalLB VIP `192.168.56.241:5432`(selector 가 `instanceRole: primary` 라 failover 를 따라간다). 메트릭 Service `-metrics` 를 302 가 긁는다.
   ⚠ 오퍼레이터가 클러스터별 SA/Role/RoleBinding 을 자동 생성하고 `enableServiceLinks: false` 를 넣을 수 없다 — '권한 모델'·파드 규약의 **문서화된 예외 2건**. ⚠ `helm uninstall` = Cluster CR 삭제 = PVC 까지 삭제(데이터 소실). 백업은 없다(`RUNBOOK.md` — `max_slot_wal_keep_size=-1` 이라 replica 방치 시 WAL 이 노드 디스크를 채운다).
-- `304-airflow` — **Airflow 3.1.5, KubernetesExecutor**: apiserver/scheduler/dag-processor/triggerer(랩에서 `replicas: 0`) + 메타DB 초기화 Job. **코드(DAG·커스텀 패키지)는 이미지에 없다** — 노드 로컬 `/data/airflow-repo`(values `repo.hostPath`) 아래 디렉토리들(`repo.dirs`: dags·collector·processor·publisher·utils)을
-  `airflowHome`(`/opt/airflow`) 아래 같은 이름에 하나씩 읽기 전용 hostPath 로 마운트한다(`/opt/airflow` 자체·`logs` 는 마운트하지 않는다). 반영은 **Ansible `airflow_repo_prereq` 의 `sync` 태그(3노드 rsync) → dag-processor 재스캔(30초)** 이라 `helm upgrade` 가 끼지 않고,
+- `304-airflow` — **Airflow 3.1.5, KubernetesExecutor**: apiserver/scheduler/dag-processor/triggerer(랩에서 `replicas: 0`) + 메타DB 초기화 Job. **코드(DAG·커스텀 패키지)는 이미지에 없다** — 노드 로컬 `/project/data_pipeline/data_layer_airflow`(values `repo.hostPath`) 아래 디렉토리들(`repo.dirs`: dags·collector·processor·publisher·utils)을
+  `airflowHome`(`/opt/airflow`) 아래 같은 이름에 하나씩 읽기 전용 hostPath 로 마운트한다(`/opt/airflow` 자체·`logs` 는 마운트하지 않는다). 반영은 **3노드 rsync(304-airflow-rsync 의 Sync Pod 가 자동 — 수동은 Ansible `airflow_repo_prereq` 의 `sync` 태그) → dag-processor 재스캔(30초)** 이라 `helm upgrade` 가 끼지 않고,
   재빌드 사유는 `requirements.txt` 변경뿐이라 **공용 `global.imageTag`** 를 쓴다. 노드 디렉토리(root:root **0755** — 컨테이너는 UID 50000 으로 읽기만)는 Terraform/Helm 밖 수동 단계다. ⚠ `hostPath.type: Directory` 라 경로가 없는 노드에서는 파드가 아예 뜨지 않는다('DAG 0개'로 조용히 도는 대신 거기서 멈추게 하려는 선택).
   **태스크 로그는 301-hadoop 의 WebHDFS**(`hdfs:///airflow-logs`, Connection `webhdfs_logs`, NameNode HTTP 두 주소 나열 — values `webhdfs.*`). Secret `airflow-env` 가 `AIRFLOW__*` 일체 + **DAG 이 읽는 Variable 4종/Connection 3종**(`AIRFLOW_VAR_*`/`AIRFLOW_CONN_*` — values `collector.*`·`secrets.*` + global 파생)을 만든다;
   `cdc_*` Connection 은 400 자격증명이라 UI 등록. 메타 DB 주소·DSN·Kafka bootstrap 은 `_helpers.tpl` 3개(`airflow.postgresHost`·`sqlAlchemyConn`·`kafkaBootstrap`)가 global 에서 파생한다. 태스크 파드 원형(ConfigMap `airflow-pod-template`)에도 같은 repo 마운트가 있어야 한다(태스크는 DAG 파일을 다시 파싱한다).
   ⚠ 초기화 Job 은 `post-install,post-upgrade` 훅이라 코어 4종 **뒤**에 돈다 — 신규 설치 때 코어가 잠시 CrashLoopBackOff 로 대기하는 것이 정상이고, 그래서 **`--wait`/`--atomic` 금지, `--timeout 10m` 필수**다. `helm uninstall` 은 안전한 편(PVC 없음)이나 hook Job `airflow-init` 은 남는다.
+- `304-airflow-rsync` — **304 의 DAG/코드 디렉토리를 노드 간에 맞추는 Sync Pod**(Deployment 1, `source.nodeName`(ap) 에 nodeAffinity 고정, 이미지 `rsync` = alpine + rsync/openssh-client/inotify-tools). 원본 `repoPath` 를 읽기 전용 hostPath 로 마운트해 inotify 로 감시하고,
+  변경(`sync.debounceSeconds` 로 묶음)·주기(`sync.intervalSeconds` — 놓친 이벤트·노드 복귀의 안전망)마다 `targets.nodeNames`(IP 는 `global.nodes` 파생 — 표에 없는 이름은 렌더 실패, `source.nodeName` 도 같은 검사)에 root SSH 로 rsync 한다(`ssh.keyHostPath` = 원본 노드의 키를 hostPath `File` 로 — 새 자격증명 없음).
+  **Ansible `airflow_repo_prereq` 의 `sync` 태그를 상시화한 것** — 옵션(`--archive --delete --delay-updates --delete-delay --chmod=Da+rx,Fa+r`)은 스크립트 고정, 제외 목록(`sync.excludes`)은 Ansible 과 같은 커밋 규칙. 디렉토리 생성(`all`)은 여전히 Ansible 선행.
+  스크립트는 ConfigMap `airflow-rsync-script`(`checksum/script` 롤아웃). Ready = 마지막 동기화가 전 대상 성공(readinessProbe — READY 0/1 이면 실패 노드가 있다), 루프 정지는 heartbeat livenessProbe 로 재시작. Service·PVC·hook 없음 — `helm uninstall` 안전. `repoPath` 는 304 `repo.hostPath`·Ansible `airflow_repo_dir` 와 같은 커밋 규칙.
 - `305-api` — data-layer-api Deployment(**replicas 1 고정** — `/quality/apply` 가 매퍼 파드를 delete 하므로 둘이 동시에 처리하면 같은 매퍼를 두 번 죽인다) + ClusterIP(`port` 8090) + Ingress(`global.hosts.api`, 업로드 상한 `proxyBodySize` 50m · 응답 대기 `proxyReadTimeout` 300).
   compose 의 docker socket 조작은 K8s API 어댑터로 대체했고 권한은 300 의 바인딩 하나. 파드가 Grafana 를 서버사이드로 부르는 경로가 있어 `global.ingressVip` 로 `hostAliases` 를 채운다(아래 '외부 노출').
 - `306-cdc` — kafka-connect(Debezium) Deployment ×`replicas`(임시 2 — 원래 3, 노드 메모리) + ClusterIP `cdc-connect`(포트 `global.kafka.connectPort` — 300 의 `KAFKA_CONNECT_URL` 과 계약). 브로커 주소는 values 로 복사하지 않고 공용 ConfigMap 의 `KAFKA_BOOTSTRAP` 을
   `configMapKeyRef` 로 읽는다(해시 어노테이션 없음 — 브로커 표가 바뀌면 300 upgrade 후 `rollout restart`). 상태는 Kafka 내부 토픽 3종(`storageTopics` — 이름을 바꾸면 커넥터가 사라진 것처럼 보이거나 스냅샷을 다시 뜬다). 커넥터 등록은 차트 밖(관리 화면/REST). 첫 Ready 까지 플러그인 스캔 수 분(startupProbe 300s).
-- `307-pipeline` — cdm-mapper 8종(values `mapper.modules` range — 라벨 `app=cdm-mapper` + `cdm.mapper/module` 은 305 DQ 적용과의 계약) + 컨슈머 3종(`consumer.kinds` — 이미지 + '코드가 읽는 이름 → 공용 키' env 번역표) + lineage 컨슈머 + tcp-socket-collector(hostNetwork + nodeSelector).
-  전부 PVC·probe 없음(이상 감지 = 컨슈머 그룹 lag). 타임아웃 사슬: 300 의 `DATA_QUALITY_RESTART_DRAIN_TIMEOUT`(180) < `mapper.terminationGracePeriodSeconds`(200), 드레인 180 + 재기동 대기 60 = 240 < 305 `proxyReadTimeout`(300) — 하나를 올리면 나머지도 같이 올린다. ⚠ ingest 노드 라벨은 차트가 붙이지 않는다 — 수동 단계 `kubectl label node s2 ingest=true`(없으면 그 파드는 Pending).
+- `307-pipeline` — cdm-mapper 8종(values `mapper.modules` range — 라벨 `app=cdm-mapper` + `cdm.mapper/module` 은 305 DQ 적용과의 계약) + 컨슈머 3종(`consumer.kinds` — 이미지 + '코드가 읽는 이름 → 공용 키' env 번역표; warehouse 는 `hdfs: true` 로 ConfigMap `hdfs-client-config` 를 `/etc/hadoop/conf` 에 마운트하고 `HADOOP_USER_NAME`=`global.hadoop.warehouse.user` 를 받는다 — 같은 릴리스라 `checksum/hdfs-client`) + lineage 컨슈머 + tcp-socket-collector(hostNetwork + nodeSelector).
+  전부 PVC·probe 없음(이상 감지 = 컨슈머 그룹 lag). 타임아웃 사슬: 300 의 `DATA_QUALITY_RESTART_DRAIN_TIMEOUT`(180) — 305 가 매퍼 파드 삭제 요청에 이 값을 `gracePeriodSeconds` 로 직접 실어 보낸다 — 드레인 180 + 재기동 대기 60 = 240 < 305 `proxyReadTimeout`(300), 하나를 올리면 나머지도 같이 올린다. `mapper/consumer.terminationGracePeriodSeconds`(300)는 이 사슬 밖(helm upgrade·노드 drain 의 상한). tcp-socket-collector 의 노드는 `tcpSocket.nodeNames` + nodeAffinity(302 와 같은 패턴 — `global.nodes` 에 없는 이름은 렌더 실패) — ⚠ hostNetwork 라 후보가 둘 이상이면 장비 쪽 대상 IP 가 전부를 커버해야 한다.
 - `400-test-rdb` — **CDC 소스 RDB 4종**(cdc-oracle · cdc-mssql · cdc-postgres · cdc-mysql) — StatefulSet(1) + ClusterIP + 초기화 ConfigMap(`files/*-initdb.*` 를 `tpl` 로 치환) + 자기 Secret `test-rdb-secrets`(values `secrets.cdcSourceDbPassword` — `data_pipeline/.env` 의 `CDC_SOURCE_DB_PASSWORD` 와 같아야 한다).
   번호가 400 인 것은 파이프라인(300번대)의 **입력을 흉내 내는 테스트 픽스처**라서다: 300번대는 이 스택 없이도 완결되고, 이 스택은 300번대의 어떤 오브젝트도 참조하지 않는다(공용 ConfigMap/Secret 도 쓰지 않는다). Service 이름·포트·계정/DB 이름이 Debezium 커넥터 JSON·Airflow `cdc_*` 커넥션과의 **대외 계약**이다.
   스키마·계정·CDC 활성화가 곧 커넥터의 전제조건이라 **초기화 스크립트가 이 스택의 본체**다 — 셋은 이미지 첫 기동 훅(빈 볼륨에서만 돈다 → 고치면 PVC `data-cdc-<db>-0` 삭제), mssql 만 helm hook Job(IF NOT EXISTS 라 멱등 — **`--timeout 20m`**). `storageClass: local-path`(저장소 규약의 명시적 예외 — 오라클만 약 12G 복제를 아낀다). ⚠ `helm uninstall` 은 PVC 를 남긴다.
 
 **스택 간 의존성은 코드에 없다.** 순서는 디렉토리 번호 규칙이 담당하고, 그 사이에 Terraform/Helm 이 모델링 못 하는 수동 단계가 있다:
-Ansible 선행작업(`longhorn_prereq`·`kafka_prereq`·`hadoop_prereq`·`airflow_repo_prereq`·`etc_hosts`) → 이미지 빌드/push(200 뒤, 300번대 전) → MinIO 버킷 시드(301-minio 뒤) → HDFS `/airflow-logs`(301-hadoop 뒤, 304 전) →
-ingest 노드 라벨(307 전) → 커넥터 등록·`cdc_*` Airflow 커넥션(306/400 뒤). Helm 차트 사이의 값 전달은 오브젝트 **이름**(ConfigMap/Secret/Service)과 `values.common.yaml` 의 같은 원본으로 한다 — `terraform output` 은 Terraform 스택 사이에만 남았다.
+Ansible 선행작업(`longhorn_prereq`·`kafka_prereq`·`hadoop_prereq`·`airflow_repo_prereq`·`etc_hosts`) → 이미지 빌드/push(200 뒤, 300번대 전) → MinIO 버킷 시드(301-minio 뒤) → HDFS `/airflow-logs`(301-hadoop 뒤, 304 전 — `/warehouse` 는 301-hadoop 의 hook Job 이 만든다) →
+커넥터 등록·`cdc_*` Airflow 커넥션(306/400 뒤). Helm 차트 사이의 값 전달은 오브젝트 **이름**(ConfigMap/Secret/Service)과 `values.common.yaml` 의 같은 원본으로 한다 — `terraform output` 은 Terraform 스택 사이에만 남았다.
 
 ## 명령어
 
@@ -129,7 +137,7 @@ helm install kafka ./301-kafka -f values.common.yaml -n data-layer --timeout 15m
 helm upgrade monitoring ./302-monitoring -f values.common.yaml -n data-layer
 
 # 이미지 빌드/push (200-harbor apply 뒤, 300번대 설치 전 — Terraform/Helm 밖 수동 단계)
-/project/data_pipeline/scripts/build_and_push.sh <TAG>              # 23종 전부 → data-layer-harbor:80/data-layer/<name>:<TAG>
+/project/data_pipeline/scripts/build_and_push.sh <TAG>              # 24종 전부 → data-layer-harbor:80/data-layer/<name>:<TAG>
 /project/data_pipeline/scripts/build_and_push.sh <TAG> <이름>...    # 선별 (예: v0.1.0 airflow hadoop)
 
 # 노드 선행작업 (Ansible 저장소에서 — 2인자: <Ansible 절대경로> <all|태그>)
@@ -141,10 +149,11 @@ bin/start_server_configuration.sh <경로> etc_hosts      # 노드 /etc/hosts �
 | 차트 | 릴리스 이름 | 비고 |
 |---|---|---|
 | 300-data-layer-base | `data-layer-base` | `-n default`, `--create-namespace` 금지 |
-| 301-hadoop / 301-kafka / 301-minio | `hadoop` / `kafka` / `minio` | kafka 는 `--timeout 15m` |
+| 301-hadoop / 301-kafka / 301-minio | `hadoop` / `kafka` / `minio` | hadoop·kafka 는 `--timeout 15m`, minio 는 `--timeout 10m`(hook Job 예산) |
 | 302-monitoring / 303-postgres | `monitoring` / `postgres` | 303 은 103 apply 이후 |
 | 304-airflow | `airflow` | `--timeout 10m`, `--wait`/`--atomic` 금지 |
-| 305-api / 306-cdc / 307-pipeline | `api` / `cdc` / `pipeline` | 307 은 ingest 라벨 먼저 |
+| 304-airflow-rsync | `airflow-rsync` | 304 와 독립(같은 번호). `source.nodeName` 의 원본 디렉토리·개인키가 hostPath 라 없으면 파드가 안 뜬다 |
+| 305-api / 306-cdc / 307-pipeline | `api` / `cdc` / `pipeline` | — |
 | 400-test-rdb | `test-rdb` | `--timeout 20m` |
 
 **`terraform apply`/`destroy` 와 `helm install`/`upgrade`/`uninstall` 은 사용자가 직접 실행한다.** Claude 는 파일 작성과
@@ -179,10 +188,13 @@ bin/start_server_configuration.sh <경로> etc_hosts      # 노드 /etc/hosts �
 - **`global.*` 은 차트에 정의하지 않는다.** 정의처는 루트 `values.common.yaml` 하나이고, 차트 values.yaml 은 그 차트만 쓰는 값만 갖는다. 두 차트 이상이 같은 값을 보면(포트·노드 표·클러스터 이름) `global` 로 올린다 — 300 의 설정 ConfigMap 이 참조하는 값도 `global` 이어야 한다.
 - **접속 주소는 값이 아니라 파생값이다.** 주소 문자열을 values 에 적어 두지 않고 원본(노드 표·clusterName·namespace·포트)에서 `_helpers.tpl` 이 조립한다 — 300·301-kafka·304 의 `kafkaBootstrap` 이 같은 원본을 같은 방식으로 조립하므로 어긋날 방법이 없다.
 - **`_helpers.tpl` 은 값 '변환'이 끼는 조합만 둔다**(FQDN 파생, `urlquery` 가 들어가는 DSN, 표 → 목록). 단순 연결(레지스트리+태그 이미지 주소)·정적 블록(라벨·envFrom)은 각 템플릿에 직접 적는다 — 헬퍼로 감싸면 값 하나 보려고 파일을 왕복해야 하고 얻는 것이 없다. 정본은 304 README '차트 규약'.
-- **설정 ConfigMap 과 그것을 읽는 파드가 같은 릴리스면 `checksum/<이름>: {{ include ... | sha256sum }}` 어노테이션을 파드 템플릿에 심어 `helm upgrade` 만으로 롤아웃한다**(302 전부, 304 `airflow-env`·pod-template, 301-kafka 도구 2종의 `checksum/kafka-bootstrap`). 다른 릴리스(300 의 `kafka-config`) 면 해시를 못 계산하므로 README 에 '사람이 재기동' 을 적는다.
-- **Job 의 `spec.template` 불변은 `helm.sh/hook-delete-policy: before-hook-creation` 으로 푼다**(301 `kafka-topics`, 304 `airflow-init`, 400 `cdc-mssql-init`). hook Job 의 대기 예산은 반드시 **스크립트 루프 < `activeDeadlineSeconds` < helm `--timeout`** 순서로 닫고, install/upgrade 명령에 그 `--timeout` 을 적어 둔다(helm 기본 5m). 실패 로그를 남기려면 `backoffLimit: 0` + `restartPolicy: Never` 가 한 쌍이다.
+- **공용 ConfigMap/Secret 의 키는 '읽는 이름'당 하나다.** 같은 값을 다른 이름으로 읽는 워크로드는 300 에 사본 키를 추가하지 않고 자기 차트의 `env:` 에 `valueFrom`(configMapKeyRef/secretKeyRef)으로 번역한다 — 301-minio(`MINIO_ROOT_*` ← `CDM_OBJSTORE_*`), 302 grafana(`GF_SERVER_ROOT_URL` ← `GRAFANA_URL`),
+  305(`COLLECTOR_DB_USER/PASSWORD` ← `<clusterName>-app-user` 의 username/password), 307(`LINEAGE_PG_DSN`·`TCP_SOCKET_PG_DSN` ← `PLATFORM_PG_DSN`, `TCP_SOCKET_DLQ_TOPIC` ← `DATA_QUALITY_DLQ_TOPIC`, graph 컨슈머 `NEO4J_*` ← `PLATFORM_NEO4J_*`).
+  종류별 튠 노브(`CDM_CONSUMER_<종류>_BATCH_*`·`*_LOG_LEVEL`)는 값이 같아도 사본이 아니라 독립 노브라 합치지 않는다. 사본 키를 지울 때는 **소비 차트를 먼저 upgrade 하고 300 을 나중에** 한다(반대면 재기동되는 파드가 값을 잃는다).
+- **설정 ConfigMap 과 그것을 읽는 파드가 같은 릴리스면 `checksum/<이름>: {{ include ... | sha256sum }}` 어노테이션을 파드 템플릿에 심어 `helm upgrade` 만으로 롤아웃한다**(302 전부, 304 `airflow-env`·pod-template, 301-kafka 도구 2종의 `checksum/kafka-bootstrap` 과 브로커의 `checksum/kafka-config`·`kafka-jmx` — 브로커는 OnDelete 라 롤아웃 대신 updateRevision 표시, 307 warehouse 컨슈머의 `checksum/hdfs-client`). 다른 릴리스(300 의 `data-layer-env` 를 읽는 306 등)면 해시를 못 계산하므로 README 에 '사람이 재기동' 을 적는다.
+- **Job 의 `spec.template` 불변은 `helm.sh/hook-delete-policy: before-hook-creation` 으로 푼다**(301-kafka `kafka-topics`, 301-hadoop `hadoop-dirs`, 301-minio `minio-buckets`, 304 `airflow-init`, 400 `cdc-mssql-init`). hook Job 의 대기 예산은 반드시 **스크립트 루프 < `activeDeadlineSeconds` < helm `--timeout`** 순서로 닫고, install/upgrade 명령에 그 `--timeout` 을 적어 둔다(helm 기본 5m). 실패 로그를 남기려면 `backoffLimit: 0` + `restartPolicy: Never` 가 한 쌍이다.
   ⚠ hook 리소스는 release manifest 가 아니라 `helm uninstall` 이 지우지 않는다 — 완전 삭제 때 `kubectl delete job` 을 함께.
-- **`helm uninstall` 의 결과는 차트마다 다르다 — README '주의' 를 먼저 읽는다.** 네임스페이스째 삭제(300) / PVC 삭제 = 데이터 소실(301-minio·302·303) / PVC 잔존 + 재설치 전 삭제 필요(301-kafka·301-hadoop — pv-protection) / PVC 잔존(400) / 안전(304·305·306·307).
+- **`helm uninstall` 의 결과는 차트마다 다르다 — README '주의' 를 먼저 읽는다.** 네임스페이스째 삭제(300) / PVC 삭제 = 데이터 소실(301-minio·302·303) / PVC 잔존 + 재설치 전 삭제 필요(301-kafka·301-hadoop — pv-protection) / PVC 잔존(400) / 안전(304·304-airflow-rsync·305·306·307).
 - **StatefulSet 의 `serviceName`·`podManagementPolicy` 는 불변이다** → `kubectl delete sts <이름> --cascade=orphan` 으로 오브젝트만 지우고 `helm upgrade` 하면 같은 라벨의 파드를 그대로 입양한다(재기동 없음).
 - **hostNetwork + 정적 local PV 패턴(301-kafka·301-hadoop)**: 자기 StorageClass(no-provisioner, WaitForFirstConsumer, Retain) + 노드마다 PV 를 range 로 찍고 `claimRef` 로 STS 의 PVC 이름(`<volume>-<sts>-<ordinal>`)에 미리 묶는다(ordinal ↔ 노드 고정). `podManagementPolicy: Parallel`(쿼럼 교착 방지) + `updateStrategy: OnDelete`(사람이 한 대씩) + `dnsPolicy: ClusterFirstWithHostNet` + `securityContext.fsGroup: 0` + `fsGroupChangePolicy: OnRootMismatch`. 노드 디렉토리는 Ansible 이 root:root **2770**(setgid) 으로 만든다 — `0770` 이면 kubelet 이 켠 setgid 가 재실행마다 벗겨져 다음 재기동 때 데이터 전체를 다시 chown 한다. PV 가 `Released` 로 남으면 `claimRef.uid` 만 patch 로 비운다(301-kafka README 'PV 재사용').
 - **YAML 은 1.1 이다**(helm/kubectl) — 8진수는 `0755` 그대로(400 oracle `defaultMode`), 셸 변수 `${VAR}` 는 이스케이프 불필요(Go 템플릿은 `$` 를 건드리지 않는다). Terraform `yamldecode`(YAML 1.2) 규칙과 반대이니 옮겨 적을 때 주의.
@@ -210,11 +222,11 @@ bin/start_server_configuration.sh <경로> etc_hosts      # 노드 /etc/hosts �
 ### 쿠버네티스 규약
 
 - 모든 매니페스트에 `namespace: {{ .Values.global.namespace }}`, 공통 라벨 `app.kubernetes.io/part-of: data-layer`(+ `app`·`app.kubernetes.io/name`, 다중 구성요소 차트는 `app.kubernetes.io/component`). 선택 삭제가 필요한 PVC 에는 `app.kubernetes.io/name` 까지 붙인다(part-of 만으로는 kafka·hadoop PVC 가 같이 잡힌다).
-- env 주입 기본형은 `envFrom: [configMapRef: data-layer-env, secretRef: data-layer-secrets]`, 워크로드 전용 값만 `env:` 로 덧붙인다(304 는 그 뒤에 `secretRef: airflow-env` — 순서상 겹치는 키는 Airflow 쪽이 이긴다). **예외**: `301-minio`(공용 `MINIO_*` 변수를 서버가 자기 설정으로 해석 → `secretKeyRef` 두 키), `400-test-rdb`(테스트 픽스처에 MinIO·Neo4j 자격증명이 들어가면 안 된다 → 자기 Secret 에서 `secretKeyRef`), 미들웨어(301-kafka 브로커·301-hadoop·302 alloy/prometheus — 앱 env 가 필요 없다).
+- env 주입 기본형은 `envFrom: [configMapRef: data-layer-env, secretRef: data-layer-secrets]`, 워크로드 전용 값만 `env:` 로 덧붙인다(304 는 그 뒤에 `secretRef: airflow-env` — 순서상 겹치는 키는 Airflow 쪽이 이긴다). **예외**: `301-minio`(공용 `MINIO_*` 변수를 서버가 자기 설정으로 해석 → 공용 Secret 의 `CDM_OBJSTORE_*` 두 키를 `secretKeyRef` 로 `MINIO_ROOT_*` 에 옮겨 받는다), `400-test-rdb`(테스트 픽스처에 MinIO·Neo4j 자격증명이 들어가면 안 된다 → 자기 Secret 에서 `secretKeyRef`), 미들웨어(301-kafka 브로커·301-hadoop·302 alloy/prometheus — 앱 env 가 필요 없다).
 - **모든 파드 spec 에 `enableServiceLinks: false`.** 자동 주입되는 도커 링크 시절 Service env 가 이름이 겹치면 컨테이너 설정을 조용히 덮어쓴다(`schema-registry` 가 `SCHEMA_REGISTRY_PORT` 로 실제로 죽었다). 유일한 예외는 303(CNPG 가 파드 템플릿을 소유 — 필드 없음).
 - **`data-layer` 네임스페이스와 그 안의 오브젝트를 `kubectl` 로 직접 수정하지 말 것.** Helm 3-way merge 가 다음 `upgrade` 에서 되돌리거나 충돌시킨다. 값 변경은 values/템플릿 수정 → `helm upgrade`(추후 git push + argocd sync). 예외는 문서화된 수동 단계뿐(노드 라벨, MinIO 버킷, HDFS 디렉토리, 커넥터/Airflow 커넥션 등록, `--cascade=orphan` 재입양).
 - 이미지는 예외 없이 Harbor 경유(`{{ .Values.global.harborRegistry }}/data-layer/<name>:{{ .Values.global.imageTag }}`), `imagePullPolicy: IfNotPresent`. 서드파티(prometheus·alloy·minio·test-rdb 4종)도 `FROM` 한 줄짜리 Dockerfile 로 `build_and_push.sh` 의 `IMAGES` 배열에서 함께 빌드해 Harbor 에 올린다 — 노드 containerd 가 Harbor 만 insecure 로 신뢰하기 때문. 태그는 불변으로 다루고 재사용하지 않는다(IfNotPresent 라 재사용하면 롤아웃이 조용히 아무 일도 안 한다). 예외는 303 의 `imageTag` 하나.
-- nodeSelector 는 원칙적으로 금지(기본 스케줄러에 위임). 예외는 둘 — `tcp-socket-collector` 의 `ingest: "true"`(장비가 패킷을 보내는 노드), `200-harbor` 컴포넌트 7개(`harbor_node_name`). **노드 후보를 정하는 것은 values `nodeNames` + nodeAffinity** 로 한다(302 prometheus/grafana, 303 CNPG) — 리스트라 후보를 둘 이상 줄 수 있다. hostNetwork + local PV 워크로드는 PV 의 nodeAffinity 가 노드를 고정하므로 nodeSelector 가 필요 없다. 한 노드에 하나만 두는 것은 required podAntiAffinity(`kubernetes.io/hostname`)로, 흩기만 할 것은 preferred 로(306 — required 면 노드 1대 장애 시 영구 Pending).
+- nodeSelector 는 원칙적으로 금지(기본 스케줄러에 위임). 예외는 하나 — `200-harbor` 컴포넌트 7개(`harbor_node_name`). **노드 후보를 정하는 것은 values `nodeNames` + nodeAffinity** 로 한다(302 prometheus/grafana, 303 CNPG, 307 tcp-socket-collector) — 리스트라 후보를 둘 이상 줄 수 있다. hostNetwork + local PV 워크로드는 PV 의 nodeAffinity 가 노드를 고정하므로 nodeSelector 가 필요 없다. 한 노드에 하나만 두는 것은 required podAntiAffinity(`kubernetes.io/hostname`)로, 흩기만 할 것은 preferred 로(306 — required 면 노드 1대 장애 시 영구 Pending).
 - hostNetwork 파드(301-kafka·301-hadoop·302 alloy·307 tcp-socket)는 `dnsPolicy: ClusterFirstWithHostNet` 을 함께 둔다 — 없으면 파드 안에서 Service 이름이 안 풀린다. 그 포트는 노드 전체에서 유일해야 한다(`ss -lnt` 로 설치 전 확인).
 - Deployment 가 RWO PVC 를 쓰면 `strategy: Recreate`(301-minio·302 — RollingUpdate 는 Multi-Attach 로 죽는다).
 
@@ -232,7 +244,7 @@ bin/start_server_configuration.sh <경로> etc_hosts      # 노드 /etc/hosts �
 - **인그레스 뒤에서는 IP 로 우회 pull 이 불가능하다**(Host 헤더가 IP 라 어떤 규칙에도 안 걸려 404). 이름 해석이 의심되면 `/etc/hosts` 와 VIP 의 ARP 응답을 먼저 본다.
 - **Ingress 오브젝트는 각 앱 차트가 소유한다.** `ingressClassName: {{ .Values.global.ingressClassName }}`(nginx) 를 반드시 명시 — 차트가 이 클래스를 기본값으로 만들지 않아 빠뜨리면 조용히 404 다. 예외: 200-harbor 는 Ingress 도 차트가 만든다(`expose.ingress.className`).
 - **경로 기반이 아니라 호스트 기반으로 가른다.** 호스트 기반은 앱이 자기가 루트에 있다고 믿어도 그대로 동작한다(경로 기반이면 Grafana 등 앱마다 base path 설정이 필요).
-- **호스트명은 서비스마다 다르다 — `data-layer-<서비스>`.** 정본은 `values.common.yaml` 의 **`global.hosts`**(kafkaUi·airflow·api·grafana·prometheus)와 200 의 `harbor_host` 이고, 300 은 같은 값으로 `KAFKA_UI_URL`·`AIRFLOW_UI_URL`·`GRAFANA_URL`·`GF_SERVER_ROOT_URL` 을 조립한다. 추가/변경하면 Ansible `data_layer_vip_dns_names`(노드 `/etc/hosts`)와 같은 커밋에서 고친다(그 목록의 `data-layer-headlamp` 는 이 저장소에 스택이 없다). 공유 이름 `external_dns_name` 은 폐기됐다 — 되살리지 말 것.
+- **호스트명은 서비스마다 다르다 — `data-layer-<서비스>`.** 정본은 `values.common.yaml` 의 **`global.hosts`**(kafkaUi·airflow·api·grafana·prometheus)와 200 의 `harbor_host` 이고, 300 은 같은 값으로 `KAFKA_UI_URL`·`AIRFLOW_UI_URL`·`GRAFANA_URL` 을 조립한다(Grafana 의 `GF_SERVER_ROOT_URL` 은 302 가 `GRAFANA_URL` 을 valueFrom 으로 번역 — 300 에 사본 키 없음). 추가/변경하면 Ansible `data_layer_vip_dns_names`(노드 `/etc/hosts`)와 같은 커밋에서 고친다(그 목록의 `data-layer-headlamp` 는 이 저장소에 스택이 없다). 공유 이름 `external_dns_name` 은 폐기됐다 — 되살리지 말 것.
 - **호스트명에 밑줄·`.local` 을 쓰지 않는다.** DNS 라벨은 영문/숫자/하이픈만(RFC 1123 — 레지스트리는 밑줄이 있으면 이미지 참조로 파싱조차 안 된다), `.local` 은 mDNS 예약 도메인(RFC 6762)이라 systemd-resolved 가 가로챈다.
 - **`<앱>_nodeport` 류 값을 다시 만들지 말 것** — 인그레스나 전용 VIP 로 노출한 서비스에 NodePort 를 되살리면 접속 경로가 둘로 갈라진다.
 - **`externalTrafficPolicy` 는 인그레스 컨트롤러 Service 에만 `Local`.** ① 클라이언트 IP 보존 ② MetalLB L2 는 `Local` 일 때 준비된 엔드포인트가 있는 노드에서만 VIP 를 광고. 앱 Service 는 전부 ClusterIP 라 이 필드가 무의미하다.
@@ -262,7 +274,7 @@ bin/start_server_configuration.sh <경로> etc_hosts      # 노드 /etc/hosts �
 | `global.hosts.*` · 200 `harbor_host` | Ansible `data_layer_vip_dns_names`, 접속 PC 의 hosts |
 | `global.kafka.data/metadata.path` | Ansible `group_vars/kafka.yml` |
 | 301-hadoop `hadoop.<구성요소>.path` · `dfs.datanode.data.dir.perm=770` | Ansible `group_vars/hadoop.yml`(경로·`hadoop_data_mode: '2770'`) |
-| 304 `repo.hostPath` | Ansible `group_vars/airflow.yml` 의 `airflow_repo_dir` |
+| 304 `repo.hostPath` · 304-airflow-rsync `repoPath` / `sync.excludes` | Ansible `group_vars/airflow.yml` 의 `airflow_repo_dir` / `airflow_repo_sync_excludes` |
 | `global.imageTag` · 303 `imageTag` | `build_and_push.sh <TAG>` 의 태그(303 은 `16.15-<TAG>` 형식) |
 | `global.secrets.collectorCryptoKey` · 400 `secrets.cdcSourceDbPassword` | `data_pipeline/.env`·`airflow.env`(값 원천 문서) |
 | 301-kafka `topics` · 307 `mapper.modules` · 400 Service 이름/포트/계정 | `data_pipeline` 의 kafka.conf TOPICS · 매퍼 모듈 파일 · Debezium 커넥터 JSON |
