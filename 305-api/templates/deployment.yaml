@@ -1,8 +1,6 @@
 # ===============================================
 # [data-layer-api Deployment]
-#
-# - 한 프로세스가 "/"(관리 화면)와 "/api"(REST)를 서빙 → 동일 출처라 CORS 없음
-# - 상태는 파드 밖(DQ 규칙·도메인 설정 = MinIO, collect_job = PostgreSQL) → PVC 없음
+#   - 한 프로세스가 "/"(관리 화면)와 "/api"(REST)를 서빙 → 동일 출처라 CORS 없음
 # ===============================================
 apiVersion: apps/v1
 kind: Deployment
@@ -67,6 +65,18 @@ spec:
                 fieldRef:
                   fieldPath: metadata.namespace
 
+            # DB 계정은 CNPG 가 role 비밀번호를 관리하는 300 의 basic-auth Secret 하나에서 받는다 → 공용 Opaque 에 사본이 없다
+            - name: COLLECTOR_DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.global.postgres.clusterName }}-app-user
+                  key: username
+            - name: COLLECTOR_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.global.postgres.clusterName }}-app-user
+                  key: password
+
           # /health 는 무인증 경로 (그 외 /api/* 는 X-API-Key)
           readinessProbe:
             httpGet:
@@ -81,7 +91,7 @@ spec:
               path: /health
               port: http
             initialDelaySeconds: 30
-            periodSeconds: 20
+            periodSeconds: 60
             failureThreshold: 6
 
           # requests 는 당분간 주석 처리 — 노드 여유가 없다 (304-airflow 와 같은 임시 조치)

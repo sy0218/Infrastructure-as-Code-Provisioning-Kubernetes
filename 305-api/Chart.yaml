@@ -1,15 +1,17 @@
 # ===================================================
 # [305-api]
 #
-# data-layer-api → 관리 화면("/") + REST("/api")
+# data-layer-api → 관리 UI("/") + REST API("/api")
 #
 # 설계
-#   - Deployment 1개 + ClusterIP + Ingress (PVC 없음 — 상태는 MinIO · PostgreSQL 에 있다)
-#   - compose 의 docker.sock 조작은 K8s API 어댑터로 대체 (권한은 300 의 바인딩 하나)
-#   - Grafana 대시보드 목록을 서버사이드로 읽는 경로가 있어 hostAliases 로 VIP 1줄을 넣는다
+#   - Deployment + ClusterIP + Ingress 구성
+#   - 상태는 MinIO/PostgreSQL에 저장하므로 PVC 불필요
+#   - Docker socket 대신 Kubernetes API로 리소스 제어
+#   - Grafana 서버사이드 조회를 위해 VIP를 hostAliases에 등록
 #
 # 의존성
-#   - 300-data-layer-base(공용 ConfigMap·Secret·권한), 102-ingress(VIP) 선행 배포
+# - 300-data-layer-base: 공통 ConfigMap/Secret/권한
+# - 102-ingress: 외부 접근용 VIP
 # ===================================================
 apiVersion: v2
 name: api

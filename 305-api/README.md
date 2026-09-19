@@ -12,7 +12,10 @@
 ## values 계약
 
 - `global.*` 은 이 차트에 없다 — 루트 `values.common.yaml` 이 정의처다(`-f values.common.yaml`).
-  쓰는 것: `namespace` · `harborRegistry` · `imageTag` · `ingressClassName` · `hosts.api` · `hosts.grafana` · `ingressVip`.
+  쓰는 것: `namespace` · `harborRegistry` · `imageTag` · `ingressClassName` · `hosts.api` · `hosts.grafana` · `ingressVip` · `postgres.clusterName`.
+- **DB 계정은 300 의 Secret `<postgres.clusterName>-app-user`(basic-auth) 에서 `secretKeyRef` 로 받는다** —
+  `COLLECTOR_DB_USER/PASSWORD`. CNPG 가 role 비밀번호를 관리하는 바로 그 Secret 이라 공용 Opaque 에 사본이 없다.
+  나머지 접속값(`COLLECTOR_DB_HOST/PORT/NAME/SCHEMA`)은 공용 ConfigMap 의 envFrom 이다.
 - **`global.ingressVip` → 파드 `hostAliases`.** CoreDNS 는 노드 `/etc/hosts` 를 보지 않아 파드가 `GRAFANA_URL`
   의 호스트명을 못 푸는데, Grafana 대시보드 목록은 이 API 가 서버사이드로 읽는다(브라우저가 직접 부르면 CORS).
   102-ingress `ingress_vip` · Ansible `ingress_vip` 와 글자 그대로 같아야 한다.
