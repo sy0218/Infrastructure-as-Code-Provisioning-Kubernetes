@@ -29,6 +29,20 @@ Broker IP와 Client Port로 bootstrap 주소를 생성한다.
 
 
 {{/*
+Kafka Bootstrap 주소 (PLAINTEXT 스킴)
+kafkaBootstrap 의 각 항목에 PLAINTEXT:// 를 붙인다 — schema-registry 가 스킴 있는 목록을 요구한다.
+예: PLAINTEXT://192.168.56.38:9092,PLAINTEXT://192.168.56.39:9092,...
+*/}}
+{{- define "datalayer.kafkaBootstrapPlaintext" -}}
+{{- $l := list -}}
+{{- range splitList "," (include "datalayer.kafkaBootstrap" .) }}
+{{- $l = append $l (printf "PLAINTEXT://%s" .) -}}
+{{- end -}}
+{{- join "," $l -}}
+{{- end -}}
+
+
+{{/*
 PostgreSQL 접속 호스트
 CNPG의 -rw Service를 사용해 현재 Primary에 연결한다.
 */}}
@@ -49,14 +63,17 @@ Collector DB용 PostgreSQL DSN
       .Values.global.secrets.postgresUser
       .Values.global.secrets.postgresPassword -}}
 {{- end -}}
+
+
 {{/*
-controller.quorum.voters — brokers 표의 앞 controllers 개: "<id>@<ip>:<controllerPort>,…".
-정적 쿼럼이라 전 브로커에 같은 값이 들어간다. kafka-config(server.properties)가 쓴다.
+Iceberg Catalog 용 PostgreSQL SQLAlchemy URI
+비밀번호는 URL 인코딩한다 — 특수문자가 URI 구분자로 해석되는 것을 막는다.
 */}}
-{{- define "datalayer.kafkaQuorumVoters" -}}
-{{- $port := int .Values.global.kafka.ports.controller -}}
-{{- $n := int .Values.global.kafka.controllers -}}
-{{- $l := list -}}
-{{- range $i, $node := .Values.global.kafka.brokers }}{{ if lt $i $n }}{{ $l = append $l (printf "%d@%s:%d" $i $node.ip $port) }}{{ end }}{{ end -}}
-{{- join "," $l -}}
+{{- define "datalayer.icebergCatalogUri" -}}
+{{- printf "postgresql+psycopg2://%s:%s@%s:%d/%s"
+      .Values.global.secrets.postgresUser
+      (urlquery .Values.global.secrets.postgresPassword)
+      (include "datalayer.postgresHost" .)
+      (int .Values.global.postgres.port)
+      .Values.global.postgres.databases.icebergCatalog -}}
 {{- end -}}
