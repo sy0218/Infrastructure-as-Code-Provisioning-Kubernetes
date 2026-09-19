@@ -1,12 +1,12 @@
 # =====================================================
 # [values.common.yaml]
-# - 전체 Helm Chart에서 사용하는 공통 설정
-# - 각 Chart의 values.yaml에는 global 값을 정의하지 않음
+#   - 전체 Helm Chart에서 사용하는 공통 설정
+#   - 각 Chart의 values.yaml에는 global 값을 정의하지 않음
 #
-# 사용:
+# 사용 ⤵
 #   helm install <release> ./<chart> -f values.common.yaml -n <namespace>
 #
-# 규칙:
+# 규칙 ⤵
 # - 여러 Chart에서 사용하는 값
 # - 노드 / 포트 등 클러스터 공통 값
 # - 300-data-layer-base가 생성하는 공통 설정에서 사용하는 값
@@ -16,7 +16,6 @@
 # =====================================================
 
 global:
-
   # -----------------------------------------------
   # 클러스터 기본
   # -----------------------------------------------
@@ -47,7 +46,6 @@ global:
   # ---------------------------------------------------
   # Kafka
   # ---------------------------------------------------
-
   kafka:
     # Broker 배치 Node
     # 개수 = replicas / 순서 = Pod ordinal
@@ -95,7 +93,6 @@ global:
   # ---------------------------------------------------
   # Hadoop (HDFS HA)
   # ---------------------------------------------------
-
   hadoop:
     # StatefulSet 이름 접두사
     name: "hadoop"
@@ -103,6 +100,12 @@ global:
     # HDFS 논리 이름
     # fs.defaultFS = hdfs://datalayer
     nameservice: "datalayer"
+
+    # Iceberg 데이터 파일 루트 — 300(ICEBERG_WAREHOUSE 파생)·301-hadoop(hadoop-dirs Job 이 생성·chown)·307(HADOOP_USER_NAME) 셋이 본다.
+    # user 는 HDFS 상의 이름일 뿐이라 OS 계정이 필요 없다(비-Kerberos simple auth).
+    warehouse:
+      path: "/warehouse"
+      user: "warehouse"
 
     # 각 구성요소의 Node 배치
     namenode:
@@ -133,7 +136,6 @@ global:
   # ---------------------------------------------------
   # Monitoring
   # ---------------------------------------------------
-
   # 300-data-layer-base가 생성하는 모니터링 설정
   alloy:
     nodeMetricsPath: "/api/v0/component/prometheus.exporter.unix.node/metrics"
@@ -141,13 +143,12 @@ global:
 
   prometheus:
     # Prometheus 공통 스크랩 주기
-    scrapeInterval: "30s"
+    scrapeInterval: "60s"
 
 
   # ---------------------------------------------------
   # PostgreSQL
   # ---------------------------------------------------
-
   postgres:
     # CNPG Cluster 이름
     clusterName: "data-layer-postgres"
@@ -165,26 +166,33 @@ global:
 
 
   # ---------------------------------------------------
-  # MinIO (301-minio — 클러스터 내부 전용 ClusterIP)
+  # MinIO (301-minio → 클러스터 내부 전용 ClusterIP)
   # ---------------------------------------------------
-
   # S3 Endpoint = 301-minio 의 Service `minio` FQDN + ports.api. 소비자가 전부 파드라 Service DNS 로 충분하다.
-  # 이름·포트는 301-minio 차트(templates/service.yaml · values.yaml ports.api)와 같은 커밋 규칙이다.
+  # 소형 오브젝트(설정·스키마 config, Airflow 태스크 로그 airflow-logs)만 — Iceberg 데이터 파일은 301-hadoop HDFS(global.hadoop.nameservice)로 간다.
+  # 이름/포트는 301-minio 차트(templates/service.yaml · values.yaml ports.api)와 같은 커밋 규칙이다.
   minioEndpoint: "http://minio.data-layer.svc.cluster.local:9000"
 
+  # 버킷 이름 → 소비자가 셋(300 CDM_OBJSTORE_BUCKET / 304 태스크 로그 s3://<airflowLogs> · 301-minio hook Job 이 전부를 생성)이라 global 이다.
+  # 키(config/airflowLogs)는 301-minio values expireDays 의 키와 같다(ILM 만료는 그 차트만의 노브라 여기 없다).
+  # 이름을 바꾸면 Job 은 새 버킷을 만들 뿐 옛 버킷/내용물은 옮기지 않는다(config 시드는 301-minio README '버킷').
+  minioBuckets:
+    config: "config"
+    airflowLogs: "airflow-logs"
+
 
   # ---------------------------------------------------
-  # Node Local Services
+  # Neo4j (301-neo4j → 클러스터 내부 전용 ClusterIP)
   # ---------------------------------------------------
-
-  # Neo4j Bolt Endpoint (Ansible 노드 로컬 설치)
-  neo4jBoltUri: "bolt://192.168.56.38:7687"
+  # Bolt Endpoint = 301-neo4j 의 Service `neo4j` FQDN + ports.bolt. 소비자(307 graph 컨슈머)가 파드라 Service DNS 로 충분하다.
+  # 이름/포트는 301-neo4j 차트(templates/service.yaml · values.yaml ports.bolt)와 같은 커밋 규칙이다.
+  # 값을 바꾸면 helm upgrade data-layer-base(ConfigMap 재렌더) + graph 컨슈머 재기동이 따른다(301-neo4j README '전환').
+  neo4jBoltUri: "bolt://neo4j.data-layer.svc.cluster.local:7687"
 
 
   # ---------------------------------------------------
   # Ingress Hosts
   # ---------------------------------------------------
-
   # /etc/hosts → Ingress VIP → Service
   hosts:
     kafkaUi: "data-layer-kafka-ui"
@@ -194,14 +202,13 @@ global:
     prometheus: "data-layer-prometheus"
 
   # Ingress VIP → 305-api 가 파드 hostAliases 로 쓴다 (파드는 data-layer-* 이름을 못 푼다)
-  # ⚠ 102-ingress 의 ingress_vip · Ansible host.yml 의 ingress_vip 와 글자 그대로 같아야 한다
+  # [주의] 102-ingress 의 ingress_vip / Ansible host.yml 의 ingress_vip 와 글자 그대로 같아야 한다
   ingressVip: "192.168.56.240"
 
 
   # ---------------------------------------------------
   # Shared Secrets
   # ---------------------------------------------------
-
   # 300-data-layer-base가 Kubernetes Secret으로 생성
   # 운영 환경에서는 SealedSecrets / SOPS 사용
   secrets:
