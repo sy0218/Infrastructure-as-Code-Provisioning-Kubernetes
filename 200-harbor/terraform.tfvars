@@ -1,13 +1,13 @@
 # ===============================================
 #  [ terraform.tfvars ]
-#    - variables.tf 에서 정의한 변수에 실제 값을 지정
+#    - variables.tf 에서 정의한 변수 → 실제 값을 지정
 # ===============================================
-
 # Kubernetes 클러스터에 접속할 때 사용할 kubeconfig 파일 경로
 kubeconfig_path = "~/.kube/config"
 
 # Helm 으로 설치할 goharbor/harbor 차트 버전 (1.18.x = Harbor v2.14)
 harbor_chart_version = "1.18.4"
+
 
 # ===============================================
 # [주의] Harbor 접속 주소
@@ -43,7 +43,7 @@ harbor_storage_class = "local-path"
 harbor_component_storage_size = "2Gi"
 
 # Harbor 컴포넌트 7 개를 전부 올릴 노드 (kubectl get nodes 의 NAME)
-harbor_node_name = "s1"
+harbor_node_name = "s2"
 
 # Trivy 취약점 DB 캐시 PVC 크기 (차트 기본값과 동일)
 harbor_trivy_storage_size = "5Gi"

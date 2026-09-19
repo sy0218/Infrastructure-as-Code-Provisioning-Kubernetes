@@ -15,10 +15,6 @@
 # → local-path PV가 노드에 종속되므로 노드 변경 시 재설치가 필요하다.
 # -----------------------------------------------
 
-locals {
-  harbor_node = { "kubernetes.io/hostname" = var.harbor_node_name }
-}
-
 resource "helm_release" "harbor" {
   name             = "harbor"
   repository       = "https://helm.goharbor.io"
@@ -71,16 +67,15 @@ resource "helm_release" "harbor" {
     harborAdminPassword = var.harbor_admin_password
 
     # -----------------------------------------------
-    # [배치]
-    #
-    # → 컴포넌트 전체를 var.harbor_node_name 노드 하나에 모은다.
+    # [컴포넌트 배치]
+    #   - 컴포넌트 전체를 var.harbor_node_name 노드 하나에 모은다.
     # -----------------------------------------------
-    portal     = { nodeSelector = local.harbor_node }
-    core       = { nodeSelector = local.harbor_node }
-    jobservice = { nodeSelector = local.harbor_node }
-    registry   = { nodeSelector = local.harbor_node }
-    database   = { internal = { nodeSelector = local.harbor_node } }
-    redis      = { internal = { nodeSelector = local.harbor_node } }
+    portal     = { nodeSelector = { "kubernetes.io/hostname" = var.harbor_node_name } }
+    core       = { nodeSelector = { "kubernetes.io/hostname" = var.harbor_node_name } }
+    jobservice = { nodeSelector = { "kubernetes.io/hostname" = var.harbor_node_name } }
+    registry   = { nodeSelector = { "kubernetes.io/hostname" = var.harbor_node_name } }
+    database   = { internal = { nodeSelector = { "kubernetes.io/hostname" = var.harbor_node_name } } }
+    redis      = { internal = { nodeSelector = { "kubernetes.io/hostname" = var.harbor_node_name } } }
 
     # -----------------------------------------------
     # [영구 저장소]
@@ -143,7 +138,7 @@ resource "helm_release" "harbor" {
       ignoreUnfixed = true
 
       # 배치는 위 [배치] 섹션과 같다
-      nodeSelector = local.harbor_node
+      nodeSelector = { "kubernetes.io/hostname" = var.harbor_node_name }
     }
   })]
 }

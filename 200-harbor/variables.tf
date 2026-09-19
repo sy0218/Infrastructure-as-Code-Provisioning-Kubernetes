@@ -17,14 +17,12 @@ variable "kubeconfig_path" {
 
 # -----------------------------------------------
 # [Harbor 접속 / 버전]
-#
-# → Harbor의 접속 주소와 Helm Chart 버전을 설정한다.
+#   - Harbor의 접속 주소와 Helm Chart 버전을 설정한다.
 #
 # → harbor_host는 Harbor를 접속할 때 사용하는 주소이며,
 #   Ingress / externalURL / containerd 설정에서도 동일하게 사용한다.
 #
 # -----------------------------------------------
-
 variable "harbor_chart_version" {
   description = "Harbor Helm Chart 버전"
   type        = string
@@ -34,6 +32,7 @@ variable "harbor_host" {
   description = "Harbor 접속 호스트명"
   type        = string
 }
+
 
 # -----------------------------------------------
 # [Proxy Timeout]
@@ -51,12 +50,10 @@ variable "harbor_proxy_timeout" {
 
 # -----------------------------------------------
 # [Harbor 관리자 비밀번호]
-#
-# → secrets.auto.tfvars에서 값을 주입한다.
+#   - secrets.auto.tfvars에서 값을 주입한다.
+# 
 # → Terraform 출력에서는 비밀번호를 숨긴다.
-#
 # -----------------------------------------------
-
 variable "harbor_admin_password" {
   description = "Harbor admin 비밀번호"
   type        = string
@@ -66,13 +63,11 @@ variable "harbor_admin_password" {
 
 # -----------------------------------------------
 # [Harbor 저장소]
-#
-# → PVC 전부를 local-path 로 둔다.
+#   - PVC 전부를 local-path 로 둔다.
+# 
 # → 이미지 정본은 MinIO 의 tar 아카이브이고 Harbor 는 그 캐시라서,
-#   노드/디스크를 잃어도 재설치 후 복원할 수 있다(Longhorn 복제 불필요).
-#
+# 노드/디스크를 잃어도 재설치 후 복원할 수 있다(Longhorn 복제 불필요).
 # -----------------------------------------------
-
 variable "harbor_registry_storage_size" {
   description = "Registry PVC 크기"
   type        = string
@@ -95,11 +90,9 @@ variable "harbor_trivy_storage_size" {
 
 # -----------------------------------------------
 # [배치 노드]
-#
 # → Harbor 컴포넌트 7개를 단일 노드에 배치한다.
 # → MinIO 에 이미지를 백업하므로 노드 분산의 필요성이 낮다.
 # → local-path PV가 노드에 종속되므로 배치 노드 변경 시 재설치가 필요하다.
-# → ap 는 control-plane taint 때문에 제외한다 (toleration 없이는 뜨지 않는다).
 # -----------------------------------------------
 variable "harbor_node_name" {
   description = "Harbor 컴포넌트 전체를 배치할 노드 이름 (kubernetes.io/hostname)"
